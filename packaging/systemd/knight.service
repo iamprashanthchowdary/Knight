@@ -1,0 +1,30 @@
+[Unit]
+Description=Knight — nginx traffic observability agent
+Documentation=file:///usr/share/doc/knight/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=knight
+Group=knight
+ExecStart=/usr/bin/knight -config /etc/knight/config.json
+Restart=on-failure
+RestartSec=3
+
+# --- Hardening ---
+# The agent only needs to read log files and rewrite its own config.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/etc/knight
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

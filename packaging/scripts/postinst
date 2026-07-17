@@ -1,0 +1,35 @@
+#!/bin/sh
+# Runs after the package's files are unpacked.
+set -e
+
+case "$1" in
+	configure)
+		# Dedicated, unprivileged system user. Added to the 'adm' group so it can
+		# read /var/log/nginx/* (least privilege — it needs nothing else).
+		if ! getent passwd knight >/dev/null 2>&1; then
+			adduser --system --group --no-create-home --home /nonexistent \
+				--gecos "Knight agent" knight
+		fi
+		adduser knight adm >/dev/null 2>&1 || true
+
+		# Seed the config only if it doesn't already exist, so upgrades never
+		# overwrite the operator's settings (the agent rewrites this file itself
+		# when configured via the dashboard, so it must NOT be a dpkg conffile).
+		mkdir -p /etc/knight
+		if [ ! -e /etc/knight/config.json ]; then
+			cp /usr/share/knight/config.default.json /etc/knight/config.json
+		fi
+		chown -R knight:knight /etc/knight
+		chmod 750 /etc/knight
+		chmod 640 /etc/knight/config.json
+
+		# Enable + (re)start under systemd, if present.
+		if [ -d /run/systemd/system ]; then
+			systemctl daemon-reload || true
+			systemctl enable knight.service || true
+			systemctl restart knight.service || true
+		fi
+		;;
+esac
+
+exit 0
