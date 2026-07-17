@@ -1,14 +1,14 @@
 Package: knight
-Version: 0.1.0
+Version: 0.1.1
 Architecture: arm64
 Maintainer: Prashanth Chowdary <ch.prashanthchowdary007@gmail.com>
 Installed-Size: 5812
 Depends: adduser
-Filename: pool/main/knight_0.1.0_arm64.deb
-Size: 2030390
-MD5sum: 120ca34f211c85d85fef9af12d20357b
-SHA1: 0357aa580cfbecc4019cc662c35f0090e8147aee
-SHA256: 64f8c4f33d6c717046bb76dfffc151f00fa02cef418470a89c91c9804a7988fe
+Filename: pool/main/knight_0.1.1_arm64.deb
+Size: 2031486
+MD5sum: 456cc5114c16e97d0c5bb2ca1a0f61c0
+SHA1: 8037935e95ef438f30503bda01e8e31774053184
+SHA256: cf2936dd28922f1d4c3d3faafbfaa956bb3857e6af2f993155aa761874bcd98c
 Section: admin
 Priority: optional
 Description: nginx traffic observability agent
