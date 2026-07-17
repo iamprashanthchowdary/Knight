@@ -17,8 +17,14 @@ APT="${DIST}/apt"
 GNUPGHOME="${ROOT}/packaging/gpg" # isolated keyring — KEEP SECRET, back it up
 SUITE="stable"
 COMP="main"
-ARCH="$(dpkg --print-architecture)"
 KEY_EMAIL="ch.prashanthchowdary007@gmail.com"
+
+# Derive the GitHub repo URL (for the landing page's "source" link) from the
+# git remote, converting the SSH form to a browsable https:// URL.
+GITHUB_URL="$(git -C "${ROOT}" remote get-url origin 2>/dev/null \
+	| sed -E 's#^git@github\.com:#https://github.com/#; s#\.git$##' || true)"
+GITHUB_URL="${GITHUB_URL:-https://github.com}"
+GITHUB_REPO="${GITHUB_URL#https://github.com/}"
 
 if ! ls "${DIST}"/knight_*.deb >/dev/null 2>&1; then
 	echo "!! no .deb in dist/ — run ./packaging/build-deb.sh first" >&2
@@ -44,15 +50,25 @@ EOF
 fi
 KEY_FPR="$(gpg --list-keys --with-colons "${KEY_EMAIL}" | awk -F: '/^fpr:/{print $10; exit}')"
 
-# 2. Repo tree.
+# 2. Repo tree. Multi-arch: one binary-<arch>/Packages index per distinct
+#    architecture found in dist/*.deb, so a repo built from both an amd64 and
+#    an arm64 .deb serves both correctly (each index lists only its own arch's
+#    packages -- required, or arm64 clients would see amd64 entries and fail
+#    to install them).
 echo ">> assembling apt repo ..."
 rm -rf "${APT}"
-mkdir -p "${APT}/pool/${COMP}" "${APT}/dists/${SUITE}/${COMP}/binary-${ARCH}"
+mkdir -p "${APT}/pool/${COMP}"
 cp "${DIST}"/knight_*.deb "${APT}/pool/${COMP}/"
 
+ARCHES="$(cd "${DIST}" && ls knight_*.deb | sed -E 's/^knight_.+_([a-zA-Z0-9]+)\.deb$/\1/' | sort -u)"
+echo ">> architectures found: $(echo ${ARCHES})"
+
 cd "${APT}"
-dpkg-scanpackages --multiversion "pool/${COMP}" > "dists/${SUITE}/${COMP}/binary-${ARCH}/Packages"
-gzip -9kf "dists/${SUITE}/${COMP}/binary-${ARCH}/Packages"
+for a in ${ARCHES}; do
+	mkdir -p "dists/${SUITE}/${COMP}/binary-${a}"
+	dpkg-scanpackages --multiversion --arch "${a}" "pool/${COMP}" > "dists/${SUITE}/${COMP}/binary-${a}/Packages"
+	gzip -9kf "dists/${SUITE}/${COMP}/binary-${a}/Packages"
+done
 
 apt-ftparchive \
 	-o APT::FTPArchive::Release::Origin=Knight \
@@ -60,7 +76,7 @@ apt-ftparchive \
 	-o APT::FTPArchive::Release::Suite="${SUITE}" \
 	-o APT::FTPArchive::Release::Codename="${SUITE}" \
 	-o APT::FTPArchive::Release::Components="${COMP}" \
-	-o APT::FTPArchive::Release::Architectures="${ARCH}" \
+	-o APT::FTPArchive::Release::Architectures="$(echo ${ARCHES})" \
 	release "dists/${SUITE}" > "dists/${SUITE}/Release"
 
 # 3. Sign the Release (both InRelease clearsign + detached Release.gpg).
@@ -74,7 +90,19 @@ gpg --export "${KEY_FPR}" > "${APT}/knight-archive-keyring.gpg"
 sed "s|@REPO_URL@|${REPO_URL}|g" "${ROOT}/packaging/install.sh.tmpl" > "${APT}/install.sh"
 chmod +x "${APT}/install.sh"
 
-# 6. GitHub Pages readiness: .nojekyll stops Jekyll from skipping/mangling the
+# 6. Landing page for browsers hitting the repo root (apt itself never
+#    requests this — it's purely so a human visiting the URL sees something
+#    useful instead of a bare directory listing / 404).
+ARCHES_BADGE="$(echo ${ARCHES} | tr ' ' '/')"
+sed \
+	-e "s|@REPO_URL@|${REPO_URL}|g" \
+	-e "s|@GITHUB_URL@|${GITHUB_URL}|g" \
+	-e "s|@GITHUB_REPO@|${GITHUB_REPO}|g" \
+	-e "s|@KEY_FPR@|${KEY_FPR}|g" \
+	-e "s|@ARCHES_BADGE@|${ARCHES_BADGE}|g" \
+	"${ROOT}/packaging/index.html.tmpl" > "${APT}/index.html"
+
+# 7. GitHub Pages readiness: .nojekyll stops Jekyll from skipping/mangling the
 #    repo files (harmless on any other host).
 touch "${APT}/.nojekyll"
 

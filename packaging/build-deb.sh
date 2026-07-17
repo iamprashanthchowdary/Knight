@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Builds a Debian/Ubuntu .deb for the Knight observe agent.
 #
-#   ./packaging/build-deb.sh [version]
+#   ./packaging/build-deb.sh [version] [arch]
+#
+# arch is a Debian architecture name (amd64, arm64, ...) and doubles as the Go
+# GOARCH -- they happen to match for these two. Defaults to the host's arch.
+# Cross-building needs no extra toolchain: CGO is disabled, so it's pure Go.
 #
 # Produces dist/knight_<version>_<arch>.deb — a static single-binary install
 # with a systemd service and a dedicated 'knight' user. No build-time deps
@@ -9,7 +13,7 @@
 set -euo pipefail
 
 VERSION="${1:-0.1.0}"
-ARCH="$(dpkg --print-architecture)" # e.g. amd64
+ARCH="${2:-$(dpkg --print-architecture)}" # e.g. amd64, arm64
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PKG="knight"
 STAGE="$(mktemp -d)"
