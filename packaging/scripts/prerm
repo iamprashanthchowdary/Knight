@@ -1,0 +1,12 @@
+#!/bin/sh
+# Runs before the package's files are removed.
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
+	if [ -d /run/systemd/system ]; then
+		systemctl stop knight.service || true
+		systemctl disable knight.service || true
+	fi
+fi
+
+exit 0

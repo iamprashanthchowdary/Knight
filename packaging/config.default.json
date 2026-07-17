@@ -1,0 +1,16 @@
+{
+  "sites": [],
+  "analytics": {
+    "enabled": true,
+    "api_listen": "127.0.0.1:8090",
+    "retention": "24h",
+    "route_patterns": []
+  },
+  "alerts": {
+    "enabled": false,
+    "rules": [],
+    "anomaly": { "enabled": false },
+    "webhook": { "enabled": false, "url": "" },
+    "email": { "enabled": false, "smtp_host": "", "smtp_port": 587, "from": "", "to": [] }
+  }
+}

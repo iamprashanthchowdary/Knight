@@ -1,0 +1,17 @@
+#!/bin/sh
+# Runs after the package's files are removed.
+set -e
+
+if [ -d /run/systemd/system ]; then
+	systemctl daemon-reload || true
+fi
+
+# On purge, remove the config and the dedicated user. Plain 'remove' keeps them.
+if [ "$1" = "purge" ]; then
+	rm -rf /etc/knight
+	if getent passwd knight >/dev/null 2>&1; then
+		deluser --system knight >/dev/null 2>&1 || true
+	fi
+fi
+
+exit 0

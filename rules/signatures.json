@@ -1,0 +1,99 @@
+{
+  "rules": [
+    {
+      "id": "SQLI-001",
+      "name": "SQL injection: UNION SELECT",
+      "severity": 10,
+      "targets": ["query", "uri", "body"],
+      "keywords": ["union", "select"],
+      "regex": "union[\\s\\S]{0,40}select",
+      "tags": ["sqli"]
+    },
+    {
+      "id": "SQLI-002",
+      "name": "SQL injection: boolean tautology (OR 1=1)",
+      "severity": 6,
+      "targets": ["query", "uri", "body"],
+      "keywords": ["or ", "and "],
+      "regex": "(or|and)\\s+['\"]?\\w+['\"]?\\s*=\\s*['\"]?\\w+",
+      "tags": ["sqli"]
+    },
+    {
+      "id": "SQLI-003",
+      "name": "SQL injection: time-based / metadata functions",
+      "severity": 8,
+      "targets": ["query", "uri", "body"],
+      "keywords": ["sleep(", "benchmark(", "waitfor delay", "information_schema", "load_file(", "pg_sleep("],
+      "tags": ["sqli"]
+    },
+    {
+      "id": "XSS-001",
+      "name": "Cross-site scripting: script/handler injection",
+      "severity": 6,
+      "targets": ["query", "uri", "body", "referer"],
+      "keywords": ["<script", "javascript:", "onerror=", "onload=", "onmouseover="],
+      "regex": "<script|javascript:|on(error|load|mouseover|focus)\\s*=",
+      "tags": ["xss"]
+    },
+    {
+      "id": "XSS-002",
+      "name": "Cross-site scripting: img/svg/iframe vectors",
+      "severity": 5,
+      "targets": ["query", "uri", "body"],
+      "keywords": ["<img", "<svg", "<iframe", "<body"],
+      "regex": "<(img|svg|iframe|body)[^>]{0,60}on\\w+\\s*=",
+      "tags": ["xss"]
+    },
+    {
+      "id": "TRAV-001",
+      "name": "Path traversal",
+      "severity": 6,
+      "targets": ["path", "query", "uri"],
+      "keywords": ["../", "..\\"],
+      "regex": "\\.\\./|\\.\\.\\\\",
+      "tags": ["lfi", "traversal"]
+    },
+    {
+      "id": "FILE-001",
+      "name": "Sensitive file access attempt",
+      "severity": 8,
+      "targets": ["path", "uri", "query"],
+      "keywords": ["/etc/passwd", "/etc/shadow", "wp-config.php", "/.env", "/.git/", "web.config", "id_rsa"],
+      "tags": ["lfi", "recon"]
+    },
+    {
+      "id": "CMDI-001",
+      "name": "OS command injection",
+      "severity": 8,
+      "targets": ["query", "uri", "body"],
+      "keywords": ["/bin/bash", "/bin/sh", ";cat ", "|nc ", "$(", "&&curl", "&&wget", "wget http", "curl http"],
+      "tags": ["rce", "cmdi"]
+    },
+    {
+      "id": "RFI-001",
+      "name": "Remote/PHP wrapper file inclusion",
+      "severity": 8,
+      "targets": ["query", "uri", "body"],
+      "keywords": ["php://", "data://", "file://", "expect://", "phar://"],
+      "tags": ["rfi", "lfi"]
+    },
+    {
+      "id": "LOG4J-001",
+      "name": "Log4Shell JNDI lookup",
+      "severity": 10,
+      "action": "block",
+      "targets": ["any"],
+      "keywords": ["${jndi:", "jndi:ldap", "jndi:rmi", "jndi:dns"],
+      "tags": ["rce", "log4shell"]
+    },
+    {
+      "id": "SCAN-001",
+      "name": "Known vulnerability scanner user-agent",
+      "severity": 10,
+      "action": "block",
+      "targets": ["user_agent"],
+      "keywords": ["sqlmap", "nikto", "nessus", "masscan", "nmap", "dirbuster", "gobuster", "wpscan", "acunetix", "fimap", "havij", "arachni", "zgrab"],
+      "tags": ["scanner", "recon"]
+    }
+  ]
+}

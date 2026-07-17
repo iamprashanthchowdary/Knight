@@ -1,0 +1,25 @@
+# Compiled binary
+/knight
+*.exe
+
+# Build artifacts
+/dist/
+
+# Local config (use packaging/config.default.json as template)
+/config.json
+
+# GPG keys and secrets
+/packaging/gpg/
+
+# AI agent / IDE config
+/.claude/
+/.kiro/
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

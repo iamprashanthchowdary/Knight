@@ -1,0 +1,63 @@
+# Example nginx integration for Knight.
+#
+# The key idea: nginx stays the real front door and asks Knight to vet every
+# request via auth_request. If Knight is up and says "block" (403), nginx blocks.
+# If Knight is DOWN or errors, nginx fails OPEN and serves the request anyway --
+# so a Knight outage never takes your site down.
+
+upstream backend {
+    server 127.0.0.1:3000;   # your real app / website / service
+}
+
+server {
+    listen 80;
+    server_name example.com;
+
+    # --- Knight decision endpoint (internal only) -------------------------
+    # nginx issues a subrequest here for every request below.
+    location = /_knight_auth {
+        internal;
+        proxy_pass              http://127.0.0.1:8088/inspect;
+        proxy_pass_request_body off;                 # body isn't needed for the decision
+        proxy_set_header        Content-Length "";
+
+        # Forward the ORIGINAL request's details for Knight to inspect.
+        proxy_set_header        X-Original-URI      $request_uri;
+        proxy_set_header        X-Original-Method   $request_method;
+        proxy_set_header        X-Original-UA       $http_user_agent;
+        proxy_set_header        X-Original-Referer  $http_referer;
+        proxy_set_header        X-Original-Cookie   $http_cookie;
+        proxy_set_header        X-Real-IP           $remote_addr;
+        proxy_set_header        X-Forwarded-For     $proxy_add_x_forwarded_for;
+    }
+
+    location / {
+        # Ask Knight first.
+        auth_request /_knight_auth;
+
+        # FAIL-OPEN: if Knight is unreachable (502/504) or errors, allow through.
+        # (A clean 403 from Knight still blocks, via the error_page below.)
+        error_page 500 502 503 504 = @pass;
+        error_page 403 = @blocked;
+
+        proxy_pass         http://backend;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+    }
+
+    # Knight said block.
+    location @blocked {
+        internal;
+        return 403 "Request blocked by Knight.\n";
+    }
+
+    # Knight unavailable -> serve anyway (fail-open).
+    location @pass {
+        internal;
+        proxy_pass         http://backend;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+    }
+}
