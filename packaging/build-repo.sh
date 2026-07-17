@@ -74,6 +74,10 @@ gpg --export "${KEY_FPR}" > "${APT}/knight-archive-keyring.gpg"
 sed "s|@REPO_URL@|${REPO_URL}|g" "${ROOT}/packaging/install.sh.tmpl" > "${APT}/install.sh"
 chmod +x "${APT}/install.sh"
 
+# 6. GitHub Pages readiness: .nojekyll stops Jekyll from skipping/mangling the
+#    repo files (harmless on any other host).
+touch "${APT}/.nojekyll"
+
 echo ">> repo ready: ${APT}"
 echo "   key fingerprint: ${KEY_FPR}"
 echo "   upload the CONTENTS of dist/apt/ to: ${REPO_URL}"

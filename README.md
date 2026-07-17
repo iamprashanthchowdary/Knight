@@ -1,169 +1,211 @@
 # Knight
 
-A fast, **fail-open** Web Application Firewall / intrusion-detection guard.
+A lightweight nginx traffic observability agent — think **Sentry for web
+traffic, at the network layer**. Knight tails your nginx access logs, turns
+every request into analytics (status-code breakdowns, per-IP behaviour,
+per-endpoint health), lets you drill into *why* requests are failing, and can
+notify you by webhook or email when something looks wrong.
 
-Knight sits beside nginx on a bastion or edge host. nginx asks it to vet **every
-request** before forwarding to the real service, and Knight also tails the nginx
-access log out of band. Most of the time it just watches; when a request matches
-its ruleset, Knight bans the source IP and the request is refused.
+It **observes only** — it never blocks, bans, or modifies traffic. Zero code
+changes to the app it's watching.
 
-> **Fail-open by design:** nginx stays the real front door. If Knight crashes or
-> is unreachable, nginx is configured to serve traffic anyway — a Knight outage
-> never takes your site down.
+> Looking for the WAF/intrusion-blocking design (inline `auth_request`,
+> IP banning, SQLi/XSS signatures)? That code still lives in this repo
+> (`internal/engine`, `internal/guard`, `internal/sentinel`, `internal/server`)
+> but is **parked, unwired** — a later layer. Everything below describes what
+> actually runs today.
 
 ---
 
 ## How it works
 
 ```
-        ┌──────────────── every request ─────────────────┐
-Client → nginx ── auth_request ─► Knight /inspect ──► 204 allow / 403 block
-   │        │   (fails OPEN if Knight is down)            │
-   │        └──► backend  (only when allowed)             │
-   │                                                      │
-   └── /var/log/nginx/access.log ── tail ─► Knight observer ┘
-                                            (aggregate/slow attacks → ban IP)
+                    ┌── nginx access log(s) ──┐
+                    │   (file / dir / glob,    │
+                    │    plain or .gz)         │
+                    └───────────┬──────────────┘
+                                │ tail
+                                ▼
+                     ┌─────────────────────┐        webhook
+                     │   Knight agent      │───┬──▶ email
+                     │ (single Go binary)  │   │    (on threshold /
+                     └──────────┬──────────┘   │     anomaly)
+                                │ JSON API       │
+                                │ (127.0.0.1:8090)
+                                ▼
+                     dashboard (FE-Knight, separate repo)
 ```
 
-Two paths share **one detection engine**:
+Every log line is parsed, its URL is normalized into an **endpoint template**
+(`/api/users/12345` → `/api/users/{id}`, dynamic UUIDs/tokens collapsed the
+same way), and folded into an in-memory store. Failing requests (`status >=
+400`) are additionally retained individually so their query strings can be
+broken into report columns later.
 
-- **Inline (real-time):** nginx `auth_request` calls `POST /inspect`. Knight
-  answers `204` (allow) or `403` (block). This can stop the very first malicious
-  request.
-- **Out-of-band (observer):** Knight tails the access log and replays each line
-  through the engine, catching abuse that's only visible in aggregate. Even in
-  pure log mode it can ban offenders.
-
-### The detection engine ("observe fast, strike only when needed")
-
-Every request runs a two-stage pipeline:
-
-1. **Aho-Corasick prefilter** — all rule *keywords* are compiled into one
-   automaton. A single `O(n)` scan of the request finds which keywords are
-   present. Rules whose keyword didn't appear are skipped entirely, so benign
-   traffic is vetted for almost nothing.
-2. **Regex confirm + anomaly scoring** — surviving candidate rules run their
-   RE2 regex (linear time, no catastrophic backtracking) against their specific
-   targets. Each firing rule adds its `severity` to an anomaly score
-   (OWASP-CRS style). The request is blocked if any rule's `action` is `block`
-   **or** the total score reaches `anomaly_threshold`.
-
-Enforcement primitives:
-
-- **IP blocklist** — TTL-based bans, checked on the fast path before the engine.
-- **Per-IP token-bucket rate limiter** — catches volumetric abuse (scanners,
-  brute force) that no single-request signature would.
+No database, no third-party modules — `go build` produces a single static
+binary.
 
 ---
 
-## Project layout
-
-```
-cmd/knight/            entrypoint
-internal/
-  ahocorasick/         multi-pattern prefilter (zero-dependency)
-  request/             request normalization (URL-decode, lower-case)
-  engine/              rule model, loader, two-stage evaluation
-  guard/               IP blocklist + rate limiter
-  server/              /inspect, /healthz, /metrics, /blocklist
-  observer/            nginx access-log tailer
-config.json            runtime config
-rules/signatures.json  the ruleset (edit this to add signatures)
-deploy/nginx.conf.example
-```
-
-No third-party modules — Knight builds into a single static binary.
-
----
-
-## Build & run
-
-Knight needs the Go toolchain (not currently installed on this machine):
+## Quick install (Ubuntu / Debian)
 
 ```bash
-# install Go (Ubuntu)
-sudo apt-get update && sudo apt-get install -y golang-go
-# or grab the latest from https://go.dev/dl/
+curl -fsSL <your-apt-repo-url>/install.sh | sh
+```
 
-# from the project root:
-go test ./...            # run the test suite
+This adds a signed APT repository and installs `knight` as a systemd service
+running under a dedicated, unprivileged `knight` user (in the `adm` group so
+it can read `/var/log/nginx`). See [`packaging/`](packaging/) for how the
+repo and `.deb` are built, and [`packaging/README.md`](packaging/README.md)
+for operating the installed service.
+
+## Build from source
+
+```bash
+go test ./...
 go build -o knight ./cmd/knight
 ./knight -config config.json
 ```
 
-Then point nginx at it using `deploy/nginx.conf.example`.
+Flags:
 
-### Try it without nginx
+| Flag | Meaning |
+|---|---|
+| `-config <path>` | config file (default `config.json`) |
+| `-from-start` | read existing log files from the beginning, not just new lines — for analyzing logs you already have |
+| `-since "<dd/mm/yyyy:hh:mm:ss>"` | only ingest requests at/after this time; implies `-from-start` |
 
-```bash
-# allowed
-curl -i localhost:8088/inspect \
-  -H 'X-Real-IP: 9.9.9.9' -H 'X-Original-URI: /products?id=42'
-
-# blocked (SQL injection) — note: only bans in enforce mode
-curl -i localhost:8088/inspect \
-  -H 'X-Real-IP: 9.9.9.9' \
-  -H 'X-Original-URI: /item?id=1 union select pw from users'
-
-curl -s localhost:8088/metrics
-curl -s localhost:8088/blocklist
-```
+Without either flag, Knight tails **only new** lines (normal live-monitoring
+mode) so a restart never re-ingests gigabytes of history.
 
 ---
 
 ## Configuration (`config.json`)
 
-| Field | Meaning |
-|-------|---------|
-| `listen` | Address the decision API binds to (keep it on localhost). |
-| `mode` | `observe` = log what *would* be blocked but allow everything (safe rollout). `enforce` = actually block & ban. |
-| `anomaly_threshold` | Total rule score at/above which a request is blocked. |
-| `ban.duration` | How long an offending IP stays banned, e.g. `15m`, `1h`. |
-| `rate_limit.requests_per_second` / `burst` | Per-IP token bucket (`0` disables). |
-| `observer.enabled` / `access_log` / `block_threshold` | Out-of-band log tailer. |
-
-**Roll out safely:** start in `observe`, watch `/metrics` and the `would block`
-log lines, tune out false positives, then switch to `enforce`.
-
----
-
-## Writing rules (`rules/signatures.json`)
-
 ```json
 {
-  "id": "SQLI-001",
-  "name": "SQL injection: UNION SELECT",
-  "severity": 10,
-  "targets": ["query", "uri", "body"],
-  "keywords": ["union", "select"],
-  "regex": "union[\\s\\S]{0,40}select",
-  "action": "",
-  "tags": ["sqli"]
+  "sites": [
+    { "name": "myapp", "access_log": "/var/log/nginx/access.log" }
+  ],
+  "analytics": {
+    "api_listen": "127.0.0.1:8090",
+    "retention": "24h",
+    "route_patterns": ["/api/users/:id/orders/:orderId"]
+  },
+  "alerts": {
+    "enabled": true,
+    "rules": [
+      { "id": "high-5xx", "metric": "status_count", "status_classes": [5],
+        "window": "2m", "threshold": 5, "channels": ["webhook"] },
+      { "id": "ip-flood", "metric": "ip_request_count",
+        "window": "1m", "threshold": 100 }
+    ],
+    "anomaly": { "enabled": true },
+    "webhook": { "enabled": true, "url": "https://your-endpoint", "secret": "..." },
+    "email":   { "enabled": true, "smtp_host": "smtp.example.com", "smtp_port": 587,
+                 "from": "knight@example.com", "to": ["ops@example.com"] }
+  }
 }
 ```
 
-- `keywords` double as the prefilter. **Give every regex rule at least one cheap
-  literal keyword that must be present for the regex to match** (e.g. `select`,
-  `<script`, `../`) — otherwise the rule runs on every request.
-- `targets`: `path`, `query`, `uri`, `user_agent`, `referer`, `cookie`, `body`,
-  or `any`.
-- `action: "block"` forces a block on a single high-confidence hit; otherwise
-  severity accumulates toward `anomaly_threshold`.
+- **`sites[].access_log`** accepts a single file, a directory, or a glob
+  (`/var/log/nginx/access.log*`) — one entry can cover a whole logrotate set,
+  including `.gz` archives, when read historically.
+- **`analytics.route_patterns`** override the automatic URL grouping. Syntax:
+  `:name` for a dynamic segment, e.g. `/api/users/:id`. First match wins; paths
+  matching nothing are auto-templated heuristically (digits→`{id}`,
+  UUID→`{uuid}`, long tokens→`{token}`).
+- **`alerts.rules`** are user-defined thresholds: *"N matching requests in a
+  window"* (`status_count`, scoped to a status class and optionally one site)
+  or *"one IP makes N requests in a window"* (`ip_request_count`, flood/scanner
+  detection).
+- **`alerts.anomaly`** is a threshold-free spike detector: it compares a recent
+  4xx/5xx rate against that **site's own** rolling baseline (mean +
+  `sensitivity`×stddev — an adaptive control-chart/Z-score test), so it adapts
+  per site instead of using one fixed percentage. Tuned by default to avoid
+  false alarms on low-traffic blips (minimum sample size + absolute rate
+  floor + cooldown).
+- **Alerts are LIVE-only** — the rule evaluator never runs during
+  `-from-start`/`-since` historical replay, so re-analyzing old logs never
+  fires stale notifications.
 
-Ships with starter signatures for SQLi, XSS, path traversal, sensitive-file
-access, command injection, RFI/PHP wrappers, Log4Shell, and known scanner UAs.
+The config can also be read/edited at runtime — see the API below — and the
+dashboard's Configuration page is the primary way most users will manage it.
+
+---
+
+## API (`127.0.0.1:8090` by default)
+
+All routes are read-only `GET` except the config-write endpoints, which only
+mount if the agent was started with config-write support wired up (always,
+via `cmd/knight`).
+
+| Route | Purpose |
+|---|---|
+| `GET /v1/overview` | totals + success/redirect/failure/error rates |
+| `GET /v1/series?bucket=&count=` | fixed-shape time series (e.g. `bucket=1h&count=24`), anchored to the latest ingested data so historical logs render correct dates |
+| `GET /v1/endpoints` | busiest endpoints (grouped), with health per endpoint |
+| `GET /v1/ips` / `GET /v1/ips/{ip}` | busiest source IPs / one IP's full breakdown |
+| `GET /v1/report/endpoints` | distinct **failing** endpoints (4xx/5xx), for drill-down |
+| `GET /v1/report/keys?endpoint=` | query-param keys discovered on that endpoint's failures, with coverage % |
+| `GET /v1/report/rows?endpoint=&keys=` | the report table (add `&format=csv` to download) |
+| `GET /v1/config` / `PUT /v1/config` | read / hot-reload the runtime config |
+| `POST /v1/config/validate` | validate an edit without saving |
+| `POST /v1/config/test-log` | check whether a candidate log path is readable |
+| `POST /v1/config/preview-route` | preview how a URL groups under draft patterns |
+| `POST /v1/alerts/test` | send a synthetic alert to verify webhook/email credentials |
+| `GET /healthz` | plain `200 ok` liveness check |
+
+## Failure drill-down reports
+
+Point Knight at a failing endpoint and it will:
+
+1. list distinct failing endpoints (4xx/5xx), busiest first,
+2. discover every query-string key present on that endpoint's failures
+   (with coverage %), and
+3. produce a table — `date · ip · status · method · endpoint` plus one column
+   per key you select — exportable as CSV.
+
+This turns a URL like
+`GET /api/lumpsum/get-redirection-url?ihNo=...&apiKey=...&fundCode=...` into a
+readable table for spotting patterns (a bad `apiKey`, a specific `fundCode`
+that always fails, etc.) without writing a single grep.
+
+---
+
+## Dashboard
+
+The web dashboard (Overview, Endpoints, IPs, Reports, Configuration) is a
+separate project — a Vite + React + TypeScript SPA that talks to this agent's
+JSON API. Apple-style monochrome design; semantic color reserved for
+success/redirect/failure/error states.
+
+---
+
+## Packaging
+
+See [`packaging/`](packaging/):
+
+- `build-deb.sh` — builds a static, stripped binary and packages it as a
+  `.deb` with a hardened systemd unit and a dedicated unprivileged user.
+- `build-repo.sh <url>` — builds a signed APT repository (GPG-signed
+  `Release`/`InRelease`, `Packages` index) from the `.deb`, plus a one-line
+  `install.sh` for end users. GitHub Pages-ready (`.nojekyll` included) — a
+  public repo with Pages enabled needs no separate domain.
 
 ---
 
 ## Roadmap / not yet built
 
-- Request **body** inspection on the inline path (auth_request only sees
-  headers; needs an OpenResty/Lua hook or a full reverse-proxy mode).
-- Push bans to `nftables`/`fail2ban` for kernel-level dropping.
-- Hot rule reload (SIGHUP) and a Prometheus metrics format.
-- Per-rule false-positive counters and a small admin UI.
+- **X-Forwarded-For parsing** — nginx currently logs the proxy/load-balancer
+  IP for every request, so per-IP analytics show one IP until this lands.
+- **arm64 package** — the `.deb`/apt repo currently ship amd64 only.
+- Cloud control-plane + hosted dashboard, CLI subcommands.
+- The parked WAF/intrusion-blocking layer (inline `auth_request` blocking,
+  Aho-Corasick + RE2 signature engine, TTL IP blocklist, nftables kernel bans,
+  port-scan sentinel) — a later layer, not removed.
 
 ## Scope & ethics
 
-Knight is a **defensive** tool for protecting services you operate. Only deploy
-it in front of infrastructure you own or are authorized to protect.
+Knight is a tool for observing traffic on infrastructure you own or are
+authorized to operate. Only point it at logs you have permission to analyze.
