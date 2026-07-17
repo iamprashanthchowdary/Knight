@@ -1,8 +1,9 @@
-// Package api exposes the analytics Store as a small read-only JSON HTTP API,
-// shaped for a web frontend to draw graphs from. Every response is JSON and
-// every route is a GET -- there is nothing here that mutates state, matching the
-// observe-only contract. CORS is open so a separately hosted FE can call it;
-// tighten AllowOrigin before exposing beyond localhost.
+// Package api exposes the analytics Store as a JSON HTTP API for a web
+// frontend. Routes are gated by two bearer-token tiers (see Auth): viewer
+// (read-only: overview, endpoints, ips, reports) and admin (viewer routes
+// plus config read/write and alert testing -- GET /v1/config is admin-only
+// since the config itself holds secrets). CORS is open so a separately hosted
+// FE can call it; tighten AllowOrigin before exposing beyond localhost.
 package api
 
 import (
@@ -18,16 +19,18 @@ import (
 	"knight/internal/config"
 )
 
-// Server bundles the store, config service and logger behind an http.Handler.
+// Server bundles the store, config service, auth, and logger behind an
+// http.Handler.
 type Server struct {
 	store *analytics.Store
 	cfg   *ConfigService
+	auth  Auth
 	log   *slog.Logger
 }
 
 // New builds the API server. cfg may be nil to run read-only (no config routes).
-func New(store *analytics.Store, cfg *ConfigService, log *slog.Logger) *Server {
-	return &Server{store: store, cfg: cfg, log: log}
+func New(store *analytics.Store, cfg *ConfigService, auth Auth, log *slog.Logger) *Server {
+	return &Server{store: store, cfg: cfg, auth: auth, log: log}
 }
 
 // Handler returns the routed, CORS-wrapped handler.
@@ -57,27 +60,28 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	mux.HandleFunc("GET /v1/overview", s.overview)
-	mux.HandleFunc("GET /v1/timeseries", s.timeseries)
-	mux.HandleFunc("GET /v1/series", s.series)
-	mux.HandleFunc("GET /v1/ips", s.ips)
-	mux.HandleFunc("GET /v1/ips/{ip}", s.ipDetail)
-	mux.HandleFunc("GET /v1/endpoints", s.endpoints)
+	mux.HandleFunc("GET /v1/overview", s.auth.requireViewer(s.overview))
+	mux.HandleFunc("GET /v1/timeseries", s.auth.requireViewer(s.timeseries))
+	mux.HandleFunc("GET /v1/series", s.auth.requireViewer(s.series))
+	mux.HandleFunc("GET /v1/ips", s.auth.requireViewer(s.ips))
+	mux.HandleFunc("GET /v1/ips/{ip}", s.auth.requireViewer(s.ipDetail))
+	mux.HandleFunc("GET /v1/endpoints", s.auth.requireViewer(s.endpoints))
 
 	// Failure drill-down reports (read-only): pick failing endpoints, discover
 	// their query-param keys, then produce a per-request table (+ CSV export).
-	mux.HandleFunc("GET /v1/report/endpoints", s.reportEndpoints)
-	mux.HandleFunc("GET /v1/report/keys", s.reportKeys)
-	mux.HandleFunc("GET /v1/report/rows", s.reportRows)
+	mux.HandleFunc("GET /v1/report/endpoints", s.auth.requireViewer(s.reportEndpoints))
+	mux.HandleFunc("GET /v1/report/keys", s.auth.requireViewer(s.reportKeys))
+	mux.HandleFunc("GET /v1/report/rows", s.auth.requireViewer(s.reportRows))
 
-	// Config (write-side): only mounted when a ConfigService is present.
+	// Config (write-side) and anything that can leak secrets or reconfigure the
+	// agent: admin-only. Only mounted when a ConfigService is present.
 	if s.cfg != nil {
-		mux.HandleFunc("GET /v1/config", s.getConfig)
-		mux.HandleFunc("PUT /v1/config", s.putConfig)
-		mux.HandleFunc("POST /v1/config/validate", s.validateConfig)
-		mux.HandleFunc("POST /v1/config/test-log", s.testLog)
-		mux.HandleFunc("POST /v1/config/preview-route", s.previewRoute)
-		mux.HandleFunc("POST /v1/alerts/test", s.testAlert)
+		mux.HandleFunc("GET /v1/config", s.auth.requireAdmin(s.getConfig))
+		mux.HandleFunc("PUT /v1/config", s.auth.requireAdmin(s.putConfig))
+		mux.HandleFunc("POST /v1/config/validate", s.auth.requireAdmin(s.validateConfig))
+		mux.HandleFunc("POST /v1/config/test-log", s.auth.requireAdmin(s.testLog))
+		mux.HandleFunc("POST /v1/config/preview-route", s.auth.requireAdmin(s.previewRoute))
+		mux.HandleFunc("POST /v1/alerts/test", s.auth.requireAdmin(s.testAlert))
 	}
 	return cors(mux)
 }
