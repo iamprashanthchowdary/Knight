@@ -38,6 +38,10 @@ func main() {
 		log.Error("load config", "err", err)
 		os.Exit(1)
 	}
+	if viewerGen, adminGen := cfg.TokensGenerated(); viewerGen || adminGen {
+		log.Warn("generated new API auth token(s) — copy these now, saved to config.json",
+			"viewer_token", cfg.Auth.ViewerToken, "admin_token", cfg.Auth.AdminToken)
+	}
 
 	var since time.Time
 	if *sinceStr != "" {
@@ -103,9 +107,10 @@ func main() {
 
 	cfgSvc := api.NewConfigService(*cfgPath, cfg, mgr, store, alertsEngine)
 
+	auth := api.Auth{ViewerToken: cfg.Auth.ViewerToken, AdminToken: cfg.Auth.AdminToken}
 	apiSrv := &http.Server{
 		Addr:              cfg.Analytics.APIListen,
-		Handler:           api.New(store, cfgSvc, log).Handler(),
+		Handler:           api.New(store, cfgSvc, auth, log).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {

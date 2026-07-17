@@ -4,6 +4,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -45,6 +47,37 @@ type Config struct {
 	// Alerts is the outbound notification layer (webhook/email on threshold or
 	// automatic anomaly triggers).
 	Alerts AlertsConfig `json:"alerts"`
+	// Auth controls who can read vs write the API. Not part of Editable: it is
+	// never rewritten by a PUT /v1/config from the dashboard, so a stale
+	// frontend payload can never accidentally blank out or overwrite tokens.
+	Auth AuthConfig `json:"auth"`
+
+	viewerTokenGenerated bool // set by Load if AuthConfig.ViewerToken was empty and freshly generated
+	adminTokenGenerated  bool // set by Load if AuthConfig.AdminToken was empty and freshly generated
+}
+
+// AuthConfig gates the analytics API with two bearer tokens:
+//
+//	ViewerToken — read-only: dashboard viewing (overview, endpoints, ips, reports).
+//	AdminToken  — read + write: viewer routes, plus GET/PUT /v1/config,
+//	              /v1/config/*, and /v1/alerts/test. GET /v1/config is
+//	              admin-only because the config itself contains secrets
+//	              (webhook secret, SMTP password).
+//
+// If a token is empty, Load auto-generates and persists a random one on first
+// boot -- the API defaults to secured, not open, even if nobody sets a token
+// by hand. Send the token as "Authorization: Bearer <token>", never as a query
+// parameter (query strings end up in nginx's own access log, which would leak
+// the token right back into the very logs Knight reads).
+type AuthConfig struct {
+	ViewerToken string `json:"viewer_token"`
+	AdminToken  string `json:"admin_token"`
+}
+
+// TokensGenerated reports whether either token was freshly auto-generated on
+// this Load call, so the caller can print them once at startup.
+func (c *Config) TokensGenerated() (viewer, admin bool) {
+	return c.viewerTokenGenerated, c.adminTokenGenerated
 }
 
 // AlertsConfig controls outbound notifications. It is a LIVE-only feature: the
@@ -302,7 +335,45 @@ func Load(path string) (*Config, error) {
 		c.Analytics.APIListen = "127.0.0.1:8090"
 	}
 	normalizeNilSlices(&c)
+
+	// Secure by default: generate + persist tokens on first boot (or upgrade
+	// from a version that predates auth) rather than leaving the API open
+	// until someone remembers to configure it.
+	changed := false
+	if c.Auth.ViewerToken == "" {
+		t, err := generateToken()
+		if err != nil {
+			return nil, fmt.Errorf("generate viewer token: %w", err)
+		}
+		c.Auth.ViewerToken = t
+		c.viewerTokenGenerated = true
+		changed = true
+	}
+	if c.Auth.AdminToken == "" {
+		t, err := generateToken()
+		if err != nil {
+			return nil, fmt.Errorf("generate admin token: %w", err)
+		}
+		c.Auth.AdminToken = t
+		c.adminTokenGenerated = true
+		changed = true
+	}
+	if changed {
+		if err := c.Save(path); err != nil {
+			return nil, fmt.Errorf("persist generated auth tokens: %w", err)
+		}
+	}
+
 	return &c, nil
+}
+
+// generateToken returns a random 32-byte token, hex-encoded.
+func generateToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // normalizeNilSlices replaces nil slices with empty ones so the JSON API
