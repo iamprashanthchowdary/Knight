@@ -1,0 +1,23 @@
+Architectures: amd64
+Codename: stable
+Components: main
+Date: Fri, 17 Jul 2026 05:22:27 +0000
+Label: Knight
+Origin: Knight
+Suite: stable
+MD5Sum:
+ 7711de2693a9d0faba66ac336c783f7c              136 Release
+ a4d642806ab600dd0e76fecd34922e84              745 main/binary-amd64/Packages
+ d99d38302d64a81bb55a775bcf9bb95b              535 main/binary-amd64/Packages.gz
+SHA1:
+ 56a4e858c5ca74abda8c64b6c36c914a8c7ca2f6              136 Release
+ 40fec52650c387ad9ed99d9003bca9a488679261              745 main/binary-amd64/Packages
+ 7cdb4293a7567fa05eb9f1e9b33c7c05043eb7d9              535 main/binary-amd64/Packages.gz
+SHA256:
+ 32c673806b769eba58510556826ae3fa0cb57cfd0625587c643cb32392c17f7b              136 Release
+ b5303ba60fc17620509da3d1b87c0e335228e189115d2179cc3b8a8d00e5f000              745 main/binary-amd64/Packages
+ 83674d31b5b7de319af84ac90dcdf80db74b5509e5e075b5591d0f055f21da45              535 main/binary-amd64/Packages.gz
+SHA512:
+ 795e2d57ecec54dbaf0a06776099d9e98b6ae7cea057dec39aa28ad7217ff62419957585288bf0c2b480d2221b7b9f10891578a2ad9d42fc2df56e99ece2954c              136 Release
+ 7359bdb265688d236ba373ef3fdd104090008eb026052533071c8a5d7eba7b70c5f8ff08b76080f45d8f77f2c9b0d8abbfa589313dc630dc595a5913149c7400              745 main/binary-amd64/Packages
+ 894efd6dd923f9bbc0a0a7c4e35ab92dfbb723ed794a413016a6b9b65adcc9b98ce58931913c2b6f26b9f46ef0e090fea4d3984d63f47a6c32cd5efb7b02bef1              535 main/binary-amd64/Packages.gz
