@@ -45,6 +45,9 @@ func main() {
 		case "version", "-version", "--version":
 			fmt.Printf("knight %s (%s)\n", version, commit)
 			return
+		case "key-gen":
+			runKeyGen(os.Args[2:])
+			return
 		}
 	}
 
@@ -205,12 +208,12 @@ func main() {
 		log.Info("historical replay: alert rule evaluation is disabled")
 	}
 
-	cfgSvc := api.NewConfigService(*cfgPath, cfg, mgr, store, alertsEngine)
+	auth := api.NewAuth(cfg.Auth.ViewerToken, cfg.Auth.AdminToken)
+	cfgSvc := api.NewConfigService(*cfgPath, cfg, mgr, store, alertsEngine, auth)
 
-	auth := api.Auth{ViewerToken: cfg.Auth.ViewerToken, AdminToken: cfg.Auth.AdminToken}
 	apiSrv := &http.Server{
 		Addr:              cfg.Analytics.APIListen,
-		Handler:           api.New(store, cfgSvc, auth, log).Handler(),
+		Handler:           api.New(store, cfgSvc, auth, api.AgentInfo{Version: version, Commit: commit}, log).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
@@ -265,4 +268,47 @@ func parseSince(s string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("unrecognized time format")
+}
+
+// runKeyGen implements `knight key-gen [-config path] admin|viewer`: a
+// one-shot maintenance command for when a token is lost and there's no
+// running dashboard session to rotate it from (see POST /v1/auth/rotate for
+// the live-API equivalent, which additionally updates the already-running
+// process without a restart). This command only edits config.json on disk --
+// a separately running knight process keeps its old token in memory until
+// restarted, which is why the printed reminder below matters.
+func runKeyGen(args []string) {
+	fs := flag.NewFlagSet("key-gen", flag.ExitOnError)
+	cfgPath := fs.String("config", "config.json", "path to config file")
+	fs.Parse(args)
+
+	rest := fs.Args()
+	if len(rest) != 1 || (rest[0] != "admin" && rest[0] != "viewer") {
+		fmt.Fprintln(os.Stderr, "usage: knight key-gen [-config path] admin|viewer")
+		os.Exit(2)
+	}
+	which := rest[0]
+
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config %s: %v\n", *cfgPath, err)
+		os.Exit(1)
+	}
+	token, err := config.GenerateToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "generate token: %v\n", err)
+		os.Exit(1)
+	}
+	if which == "admin" {
+		cfg.Auth.AdminToken = token
+	} else {
+		cfg.Auth.ViewerToken = token
+	}
+	if err := cfg.Save(*cfgPath); err != nil {
+		fmt.Fprintf(os.Stderr, "save config %s: %v\n", *cfgPath, err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("new %s token: %s\n", which, token)
+	fmt.Println("Restart knight for this to take effect (a running process keeps its old token in memory until restarted), or rotate it live instead from the dashboard's Profile page.")
 }

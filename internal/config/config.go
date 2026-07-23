@@ -378,7 +378,7 @@ func Load(path string) (*Config, error) {
 	// until someone remembers to configure it.
 	changed := false
 	if c.Auth.ViewerToken == "" {
-		t, err := generateToken()
+		t, err := GenerateToken()
 		if err != nil {
 			return nil, fmt.Errorf("generate viewer token: %w", err)
 		}
@@ -387,7 +387,7 @@ func Load(path string) (*Config, error) {
 		changed = true
 	}
 	if c.Auth.AdminToken == "" {
-		t, err := generateToken()
+		t, err := GenerateToken()
 		if err != nil {
 			return nil, fmt.Errorf("generate admin token: %w", err)
 		}
@@ -404,8 +404,11 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
-// generateToken returns a random 32-byte token, hex-encoded.
-func generateToken() (string, error) {
+// GenerateToken returns a random 32-byte token, hex-encoded. Shared by Load's
+// first-boot auto-generation and any later manual rotation (CLI `key-gen` and
+// the admin-only POST /v1/auth/rotate API), so there's exactly one
+// implementation of "how a token is generated."
+func GenerateToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", err

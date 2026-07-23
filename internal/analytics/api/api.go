@@ -19,18 +19,26 @@ import (
 	"knight/internal/config"
 )
 
-// Server bundles the store, config service, auth, and logger behind an
-// http.Handler.
+// AgentInfo is static build metadata (set via -ldflags in cmd/knight),
+// exposed over the API so the FE can show which agent build it's talking to.
+type AgentInfo struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit"`
+}
+
+// Server bundles the store, config service, auth, agent info, and logger
+// behind an http.Handler.
 type Server struct {
 	store *analytics.Store
 	cfg   *ConfigService
-	auth  Auth
+	auth  *Auth
+	info  AgentInfo
 	log   *slog.Logger
 }
 
 // New builds the API server. cfg may be nil to run read-only (no config routes).
-func New(store *analytics.Store, cfg *ConfigService, auth Auth, log *slog.Logger) *Server {
-	return &Server{store: store, cfg: cfg, auth: auth, log: log}
+func New(store *analytics.Store, cfg *ConfigService, auth *Auth, info AgentInfo, log *slog.Logger) *Server {
+	return &Server{store: store, cfg: cfg, auth: auth, info: info, log: log}
 }
 
 // Handler returns the routed, CORS-wrapped handler.
@@ -52,6 +60,8 @@ func (s *Server) Handler() http.Handler {
 				"/v1/report/rows?endpoint=...&keys=...",
 				"/v1/config",
 				"/v1/alerts/test",
+				"/v1/agent",
+				"/v1/auth/rotate",
 				"/healthz",
 			},
 		})
@@ -60,6 +70,7 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("GET /v1/agent", s.auth.requireViewer(s.agentInfo))
 	mux.HandleFunc("GET /v1/overview", s.auth.requireViewer(s.overview))
 	mux.HandleFunc("GET /v1/timeseries", s.auth.requireViewer(s.timeseries))
 	mux.HandleFunc("GET /v1/series", s.auth.requireViewer(s.series))
@@ -82,8 +93,39 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("POST /v1/config/test-log", s.auth.requireAdmin(s.testLog))
 		mux.HandleFunc("POST /v1/config/preview-route", s.auth.requireAdmin(s.previewRoute))
 		mux.HandleFunc("POST /v1/alerts/test", s.auth.requireAdmin(s.testAlert))
+		mux.HandleFunc("POST /v1/auth/rotate", s.auth.requireAdmin(s.rotateToken))
 	}
 	return cors(mux)
+}
+
+func (s *Server) agentInfo(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, s.info)
+}
+
+// rotateToken generates and persists a fresh token for "admin" or "viewer",
+// swaps it into the live Auth (see ConfigService.RotateToken), and returns it
+// once. Admin-only: token management is the same trust tier as config
+// read/write.
+func (s *Server) rotateToken(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Which string `json:"which"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if body.Which != "admin" && body.Which != "viewer" {
+		http.Error(w, `{"ok":false,"error":"which must be \"admin\" or \"viewer\""}`, http.StatusBadRequest)
+		return
+	}
+	token, err := s.cfg.RotateToken(body.Which)
+	if err != nil {
+		s.log.Error("rotate token", "which", body.Which, "err", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	s.log.Info("token rotated via api", "which", body.Which)
+	writeJSON(w, map[string]any{"ok": true, "which": body.Which, "token": token})
 }
 
 // testAlert sends a synthetic alert to the requested channels (or every

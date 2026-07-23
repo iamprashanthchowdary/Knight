@@ -27,12 +27,54 @@ type ConfigService struct {
 	mgr    *analytics.Manager
 	store  *analytics.Store
 	alerts *alerts.Engine // optional; nil disables alert-related reload
+	auth   *Auth          // rotated tokens are pushed here immediately after a successful persist
 }
 
 // NewConfigService wires the service to the loaded config and running runtime.
 // alertsEngine may be nil if alerting isn't wired up.
-func NewConfigService(path string, cfg *config.Config, mgr *analytics.Manager, store *analytics.Store, alertsEngine *alerts.Engine) *ConfigService {
-	return &ConfigService{path: path, cfg: cfg, mgr: mgr, store: store, alerts: alertsEngine}
+func NewConfigService(path string, cfg *config.Config, mgr *analytics.Manager, store *analytics.Store, alertsEngine *alerts.Engine, auth *Auth) *ConfigService {
+	return &ConfigService{path: path, cfg: cfg, mgr: mgr, store: store, alerts: alertsEngine, auth: auth}
+}
+
+// RotateToken generates a fresh random token for "admin" or "viewer",
+// persists it to config.json, then swaps it into the live Auth so it is
+// enforced starting with the very next request -- no restart required.
+// Returns the new token, which is shown to the caller exactly once: Knight
+// never stores or displays a token after this point except as a bearer
+// credential to compare against.
+//
+// Ordering is deliberate: the live Auth is only updated AFTER Save succeeds,
+// so the token enforced in memory and the token a future restart would load
+// from disk can never diverge, even transiently on a write error.
+func (s *ConfigService) RotateToken(which string) (newToken string, err error) {
+	if which != "admin" && which != "viewer" {
+		return "", fmt.Errorf("unknown token tier %q", which)
+	}
+	token, err := config.GenerateToken()
+	if err != nil {
+		return "", err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	prev := s.cfg.Auth
+	if which == "admin" {
+		s.cfg.Auth.AdminToken = token
+	} else {
+		s.cfg.Auth.ViewerToken = token
+	}
+	if err := s.cfg.Save(s.path); err != nil {
+		s.cfg.Auth = prev // roll back: in-memory cfg must never diverge from disk
+		return "", err
+	}
+
+	if which == "admin" {
+		s.auth.SetAdmin(token)
+	} else {
+		s.auth.SetViewer(token)
+	}
+	return token, nil
 }
 
 // FieldError points the UI at exactly which field is wrong.

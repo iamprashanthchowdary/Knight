@@ -17,7 +17,7 @@ func request(token string) *http.Request {
 }
 
 func TestRequireViewer(t *testing.T) {
-	a := Auth{ViewerToken: "view-tok", AdminToken: "admin-tok"}
+	a := NewAuth("view-tok", "admin-tok")
 	h := a.requireViewer(handlerOK)
 
 	cases := []struct {
@@ -42,7 +42,7 @@ func TestRequireViewer(t *testing.T) {
 }
 
 func TestRequireAdmin(t *testing.T) {
-	a := Auth{ViewerToken: "view-tok", AdminToken: "admin-tok"}
+	a := NewAuth("view-tok", "admin-tok")
 	h := a.requireAdmin(handlerOK)
 
 	cases := []struct {
@@ -66,7 +66,7 @@ func TestRequireAdmin(t *testing.T) {
 }
 
 func TestUnauthorizedResponseIsWellFormed(t *testing.T) {
-	a := Auth{ViewerToken: "v", AdminToken: "ad"}
+	a := NewAuth("v", "ad")
 	w := httptest.NewRecorder()
 	a.requireAdmin(handlerOK)(w, request(""))
 
@@ -82,10 +82,60 @@ func TestNoTokensConfiguredMeansEverythingRejected(t *testing.T) {
 	// Empty Auth (e.g. a bug that skipped Load's auto-generation) must fail
 	// closed, never open -- an empty configured token must never match an
 	// empty/missing request token.
-	a := Auth{}
+	a := NewAuth("", "")
 	w := httptest.NewRecorder()
 	a.requireViewer(handlerOK)(w, request(""))
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("empty tokens must fail closed, got status %d", w.Code)
+	}
+}
+
+func TestAuthSetAdminHotSwap(t *testing.T) {
+	a := NewAuth("view-tok", "admin-tok")
+
+	a.SetAdmin("admin-tok-2")
+
+	w := httptest.NewRecorder()
+	a.requireAdmin(handlerOK)(w, request("admin-tok"))
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("old admin token should be rejected immediately after rotation, got status %d", w.Code)
+	}
+
+	w = httptest.NewRecorder()
+	a.requireAdmin(handlerOK)(w, request("admin-tok-2"))
+	if w.Code != http.StatusOK {
+		t.Errorf("new admin token should be accepted immediately, got status %d", w.Code)
+	}
+
+	// The viewer token must be untouched by an admin-only rotation.
+	w = httptest.NewRecorder()
+	a.requireViewer(handlerOK)(w, request("view-tok"))
+	if w.Code != http.StatusOK {
+		t.Errorf("viewer token should survive an admin rotation, got status %d", w.Code)
+	}
+}
+
+func TestAuthSetViewerHotSwap(t *testing.T) {
+	a := NewAuth("view-tok", "admin-tok")
+
+	a.SetViewer("view-tok-2")
+
+	w := httptest.NewRecorder()
+	a.requireViewer(handlerOK)(w, request("view-tok"))
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("old viewer token should be rejected immediately after rotation, got status %d", w.Code)
+	}
+
+	w = httptest.NewRecorder()
+	a.requireViewer(handlerOK)(w, request("view-tok-2"))
+	if w.Code != http.StatusOK {
+		t.Errorf("new viewer token should be accepted immediately, got status %d", w.Code)
+	}
+
+	// The admin token must be untouched by a viewer-only rotation.
+	w = httptest.NewRecorder()
+	a.requireAdmin(handlerOK)(w, request("admin-tok"))
+	if w.Code != http.StatusOK {
+		t.Errorf("admin token should survive a viewer rotation, got status %d", w.Code)
 	}
 }
