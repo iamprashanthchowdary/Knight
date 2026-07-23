@@ -116,6 +116,13 @@ func ingestFile(path, site string, norm *NormalizerHolder, sink *Store, since ti
 		sink.Add(rec, norm.Normalize(rec.Path))
 		n++
 	}
+	// Scan() returns false on a clean EOF AND on a real read error (e.g. a
+	// truncated/corrupt gzip body) -- without this check, a genuinely broken
+	// file silently reports "0 records, all fine" instead of a warning.
+	if err := sc.Err(); err != nil {
+		log.Warn("batch: error reading log (partial read)", "path", path, "records_before_error", n, "err", err)
+		return 0, err
+	}
 	log.Info("batch: ingested archive", "path", path, "records", n)
 
 	if isGz {

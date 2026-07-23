@@ -118,12 +118,23 @@ func (m *Manager) BootstrapWithHistory(sites []SiteSpec, patterns []string, sinc
 		_, warmSite := pos.Files[active]
 
 		if !warmSite {
-			for _, f := range expandSources(s.AccessLog) {
+			files := expandSources(s.AccessLog)
+			m.log.Info("batch: reading rotation set", "site", name, "files", len(files), "active", active)
+			for _, f := range files {
 				if f == active {
 					continue // handled by startActiveSite below, possibly live-tailed afterward
 				}
-				go func(f string) { _, _ = ingestFile(f, name, m.holder, m.store, since, m.log) }(f)
+				go func(f string) {
+					n, err := ingestFile(f, name, m.holder, m.store, since, m.log)
+					if err != nil {
+						m.log.Warn("batch: ingest failed", "site", name, "path", f, "err", err)
+						return
+					}
+					_ = n
+				}(f)
 			}
+		} else {
+			m.log.Info("batch: warm restart, skipping rotation set", "site", name, "active", active)
 		}
 		go m.startActiveSite(name, active, since, pos)
 	}

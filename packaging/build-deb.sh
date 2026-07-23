@@ -22,8 +22,14 @@ trap 'rm -rf "${STAGE}"' EXIT
 
 echo ">> building static binary (CGO disabled) ..."
 # Static, stripped binary so it runs on any Ubuntu with no shared-lib concerns.
+# -X flags bake the package VERSION and current commit into the binary so
+# `knight --version` matches what `dpkg -l`/`apt` report -- without these the
+# binary always falls back to its "dev (unknown)" default, silently out of
+# sync with the actual package version being installed.
+COMMIT="$(git -C "${ROOT}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 CGO_ENABLED=0 GOOS=linux GOARCH="${ARCH}" \
-	go build -trimpath -ldflags "-s -w" -o "${STAGE}/knight" "${ROOT}/cmd/knight"
+	go build -trimpath -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
+	-o "${STAGE}/knight" "${ROOT}/cmd/knight"
 
 echo ">> assembling package tree ..."
 install -Dm0755 "${STAGE}/knight"                       "${STAGE}/pkg/usr/bin/knight"
