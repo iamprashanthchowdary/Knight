@@ -74,3 +74,22 @@ Description: nginx traffic observability agent
  reports) plus webhook/email alerting over a local JSON API for the Knight
  dashboard. It observes only -- it never blocks or modifies traffic.
 
+Package: knight
+Version: 0.2.3
+Architecture: amd64
+Maintainer: Prashanth Chowdary <ch.prashanthchowdary007@gmail.com>
+Installed-Size: 6356
+Depends: adduser
+Filename: pool/main/knight_0.2.3_amd64.deb
+Size: 2359810
+MD5sum: eeb359c03ec69a712bcc3a2d33e663dd
+SHA1: f58e6ca4eb92c56980a3c264a934ce995a606c44
+SHA256: a8c52d24c5a2e95f74a826be733acd580a18f131b768d3d89b1f4a9e10a84c0f
+Section: admin
+Priority: optional
+Description: nginx traffic observability agent
+ Knight tails nginx access logs and serves traffic analytics (status-code
+ breakdowns, per-IP behaviour, per-endpoint health, failure drill-down
+ reports) plus webhook/email alerting over a local JSON API for the Knight
+ dashboard. It observes only -- it never blocks or modifies traffic.
+
