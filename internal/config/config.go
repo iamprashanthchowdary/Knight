@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -52,8 +53,9 @@ type Config struct {
 	// frontend payload can never accidentally blank out or overwrite tokens.
 	Auth AuthConfig `json:"auth"`
 
-	viewerTokenGenerated bool // set by Load if AuthConfig.ViewerToken was empty and freshly generated
-	adminTokenGenerated  bool // set by Load if AuthConfig.AdminToken was empty and freshly generated
+	viewerTokenGenerated bool   // set by Load if AuthConfig.ViewerToken was empty and freshly generated
+	adminTokenGenerated  bool   // set by Load if AuthConfig.AdminToken was empty and freshly generated
+	loadedFrom           string // path Load was called with, used to derive a default state dir
 }
 
 // AuthConfig gates the analytics API with two bearer tokens:
@@ -208,6 +210,14 @@ type AnalyticsConfig struct {
 	// RoutePatterns are optional endpoint templates that override the automatic
 	// URL grouping, e.g. "/api/users/:id/orders/:orderId". First match wins.
 	RoutePatterns []string `json:"route_patterns"`
+	// StateDir is where the periodic analytics snapshot + tailer position
+	// registry are persisted, so a restart resumes instantly instead of
+	// reprocessing the whole retention window. Empty = derive a default (see
+	// Config.StateDir). Must be absolute if set.
+	StateDir string `json:"state_dir,omitempty"`
+	// SnapshotInterval controls how often the analytics store + tailer
+	// positions are checkpointed to StateDir, e.g. "2m". Empty = 2 minutes.
+	SnapshotInterval string `json:"snapshot_interval,omitempty"`
 }
 
 // SentinelConfig arms trap ports against port scanners: any completed TCP
@@ -261,6 +271,32 @@ func (c *Config) SentinelBanDuration() time.Duration {
 // AnalyticsRetention parses Analytics.Retention, defaulting to 24 hours.
 func (c *Config) AnalyticsRetention() time.Duration {
 	return parseDur(c.Analytics.Retention, 24*time.Hour)
+}
+
+// StateDir resolves where the analytics snapshot + tailer position registry
+// live, in priority order: an explicit analytics.state_dir, then $STATE_DIRECTORY
+// (set by systemd when the unit declares StateDirectory=), then a directory
+// named "state" next to the config file itself. The last option is what makes
+// this work with zero packaging changes: under the packaged install, config.json
+// lives at /etc/knight/config.json, which the systemd unit's
+// ReadWritePaths=/etc/knight already allows writing under.
+func (c *Config) StateDir() string {
+	if c.Analytics.StateDir != "" {
+		return c.Analytics.StateDir
+	}
+	if d := os.Getenv("STATE_DIRECTORY"); d != "" {
+		return d
+	}
+	dir := filepath.Dir(c.loadedFrom)
+	if dir == "" {
+		dir = "."
+	}
+	return filepath.Join(dir, "state")
+}
+
+// SnapshotInterval parses Analytics.SnapshotInterval, defaulting to 2 minutes.
+func (c *Config) SnapshotInterval() time.Duration {
+	return parseDur(c.Analytics.SnapshotInterval, 2*time.Minute)
 }
 
 func parseDur(s string, def time.Duration) time.Duration {
@@ -319,6 +355,7 @@ func Load(path string) (*Config, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	c.loadedFrom = path
 	if c.Listen == "" {
 		c.Listen = "127.0.0.1:8088"
 	}

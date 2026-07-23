@@ -26,6 +26,19 @@ const alertWindowRetention = 3 * time.Hour
 // oldest 10% is dropped in one shot (amortized O(1) per ingest).
 const maxFailingEvents = 50000
 
+// maxTrackedIPs bounds the ONE structure in this file with no natural ceiling:
+// unlike endpoints (bounded by route cardinality after normalization) or
+// events (hard-capped above), a public site can have an unbounded number of
+// distinct visitors, and idle-based eviction alone doesn't cap the COUNT --
+// only how long a quiet IP is remembered. Rough memory budget at the cap: a
+// typical IP (a handful of endpoints touched) costs well under 1KB; a
+// worst-case IP that hit maxEndpointsPerIP costs roughly 30-50KB. So 200,000
+// tracked IPs is on the order of 100-300MB worst case, far less in practice.
+// Enforced in Evict (once/minute), not Add (the per-request hot path), so a
+// traffic burst can briefly exceed this between ticks -- bounded by how many
+// new distinct IPs can arrive in one minute.
+const maxTrackedIPs = 200_000
+
 // Event is one retained failing request, kept so reports can break its query
 // string into per-key columns. Aggregates can't do that -- they've already
 // thrown away the individual URLs.
@@ -222,6 +235,7 @@ func (s *Store) Evict(now time.Time) {
 			delete(s.ips, k)
 		}
 	}
+	evictOldestIPs(s.ips, maxTrackedIPs)
 
 	// Windowed alert data uses its own short, fixed retention regardless of the
 	// display retention above.
@@ -252,6 +266,162 @@ func (s *Store) Evict(now time.Time) {
 	if i > 0 {
 		s.events = append(s.events[:0], s.events[i:]...)
 	}
+}
+
+// evictOldestIPs deletes the least-recently-seen entries from m until its size
+// is at or under cap. A no-op when already under cap, so the common case (a
+// site with well under maxTrackedIPs distinct visitors) never pays this cost.
+func evictOldestIPs(m map[string]*IPStat, limit int) {
+	over := len(m) - limit
+	if over <= 0 {
+		return
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return m[keys[i]].Last.Before(m[keys[j]].Last) })
+	for _, k := range keys[:over] {
+		delete(m, k)
+	}
+}
+
+// ---- persistence: periodic checkpoint to disk (see snapshot.go) ----
+
+// Snapshot captures the Store's durable state as a Snapshot DTO, suitable for
+// gob-encoding to disk via SaveSnapshot. Deliberately excludes the alert-window
+// data (siteMinutes/ipMinutes) -- see the Snapshot type's doc comment. Does not
+// set SavedAt; the caller stamps that so it can be correlated with a matching
+// Positions save (see cmd/knight/main.go).
+func (s *Store) Snapshot() Snapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	minutes := make(map[int64]MinuteSnapshot, len(s.minutes))
+	for m, b := range s.minutes {
+		codes := make(map[int]int64, len(b.codes))
+		for k, v := range b.codes {
+			codes[k] = v
+		}
+		minutes[m] = MinuteSnapshot{
+			ClassCountsSnapshot: ClassCountsSnapshot{Total: b.total, Class: b.class},
+			Codes:               codes,
+		}
+	}
+
+	sites := make(map[string]ClassCountsSnapshot, len(s.sites))
+	for k, cc := range s.sites {
+		sites[k] = ClassCountsSnapshot{Total: cc.total, Class: cc.class}
+	}
+
+	ips := make(map[string]IPSnapshot, len(s.ips))
+	for k, ip := range s.ips {
+		siteSet := make(map[string]bool, len(ip.Sites))
+		for name := range ip.Sites {
+			siteSet[name] = true
+		}
+		eps := make(map[string]int64, len(ip.Endpoints))
+		for e, n := range ip.Endpoints {
+			eps[e] = n
+		}
+		ips[k] = IPSnapshot{
+			IP: ip.IP, First: ip.First, Last: ip.Last,
+			Sites: siteSet, Endpoints: eps,
+			ClassCountsSnapshot: ClassCountsSnapshot{Total: ip.total, Class: ip.class},
+		}
+	}
+
+	endpoints := make(map[string]EndpointSnapshot, len(s.endpoints))
+	for k, ep := range s.endpoints {
+		ipSet := make(map[string]bool, len(ep.ips))
+		for ip := range ep.ips {
+			ipSet[ip] = true
+		}
+		endpoints[k] = EndpointSnapshot{
+			Site: ep.Site, Method: ep.Method, Template: ep.Template, Last: ep.Last,
+			IPs:                 ipSet,
+			ClassCountsSnapshot: ClassCountsSnapshot{Total: ep.total, Class: ep.class},
+		}
+	}
+
+	events := make([]Event, len(s.events))
+	copy(events, s.events)
+
+	return Snapshot{
+		Version:   snapshotVersion,
+		Retention: s.retention,
+		Minutes:   minutes,
+		Sites:     sites,
+		IPs:       ips,
+		Endpoints: endpoints,
+		Events:    events,
+	}
+}
+
+// Restore rebuilds the Store's state from snap, REPLACING (not merging) what's
+// currently present. Must be called before any tailer starts writing to this
+// Store -- normally the first thing done with a freshly-constructed Store, right
+// after NewStore and before Manager.BootstrapWithHistory. Deliberately leaves
+// the current retention (from the live config, which may have changed since
+// the snapshot was written) untouched rather than overwriting it from snap.
+func (s *Store) Restore(snap Snapshot) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.minutes = make(map[int64]*bucket, len(snap.Minutes))
+	for m, ms := range snap.Minutes {
+		codes := make(map[int]int64, len(ms.Codes))
+		for k, v := range ms.Codes {
+			codes[k] = v
+		}
+		s.minutes[m] = &bucket{
+			classCounts: classCounts{total: ms.Total, class: ms.Class},
+			codes:       codes,
+		}
+	}
+
+	s.sites = make(map[string]*classCounts, len(snap.Sites))
+	for k, cc := range snap.Sites {
+		s.sites[k] = &classCounts{total: cc.Total, class: cc.Class}
+	}
+
+	s.ips = make(map[string]*IPStat, len(snap.IPs))
+	for k, ip := range snap.IPs {
+		siteSet := make(map[string]struct{}, len(ip.Sites))
+		for name := range ip.Sites {
+			siteSet[name] = struct{}{}
+		}
+		eps := make(map[string]int64, len(ip.Endpoints))
+		for e, n := range ip.Endpoints {
+			eps[e] = n
+		}
+		s.ips[k] = &IPStat{
+			IP: ip.IP, First: ip.First, Last: ip.Last,
+			Sites: siteSet, Endpoints: eps,
+			classCounts: classCounts{total: ip.Total, class: ip.Class},
+		}
+	}
+
+	s.endpoints = make(map[string]*EndpointStat, len(snap.Endpoints))
+	for k, ep := range snap.Endpoints {
+		ipSet := make(map[string]struct{}, len(ep.IPs))
+		for ip := range ep.IPs {
+			ipSet[ip] = struct{}{}
+		}
+		s.endpoints[k] = &EndpointStat{
+			Site: ep.Site, Method: ep.Method, Template: ep.Template, Last: ep.Last,
+			ips:         ipSet,
+			classCounts: classCounts{total: ep.Total, class: ep.Class},
+		}
+	}
+
+	s.events = make([]Event, len(snap.Events))
+	copy(s.events, snap.Events)
+
+	// Alert-window data is deliberately not part of Snapshot -- reset to fresh
+	// empty maps rather than leaving whatever a pre-existing Store had.
+	s.siteMinutes = make(map[string]map[int64]*classCounts)
+	s.ipMinutes = make(map[int64]map[string]int64)
 }
 
 // ---- query helpers used by the API ----

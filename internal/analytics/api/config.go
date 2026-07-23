@@ -83,6 +83,14 @@ func (s *ConfigService) Validate(e config.Editable) []FieldError {
 			errs = append(errs, FieldError{fmt.Sprintf("analytics.route_patterns[%d]", i), "must start with /"})
 		}
 	}
+	if e.Analytics.StateDir != "" && !filepath.IsAbs(e.Analytics.StateDir) {
+		errs = append(errs, FieldError{"analytics.state_dir", "must be an absolute path"})
+	}
+	if e.Analytics.SnapshotInterval != "" {
+		if d, err := time.ParseDuration(e.Analytics.SnapshotInterval); err != nil || d <= 0 {
+			errs = append(errs, FieldError{"analytics.snapshot_interval", "not a valid duration, e.g. 2m"})
+		}
+	}
 	errs = append(errs, validateAlerts(e.Alerts)...)
 	return errs
 }
@@ -254,7 +262,7 @@ func TestLog(path string) TestLogResult {
 		if len(res.Sample) < 3 {
 			res.Sample = append(res.Sample, line)
 		}
-		if rec, ok := analytics.ParseCombined(line, ""); ok {
+		if rec, ok := analytics.Parse(line, ""); ok {
 			res.ParseOK = true
 			if first.IsZero() {
 				first = rec.Time

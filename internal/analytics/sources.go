@@ -62,30 +62,51 @@ func resolveLiveFile(pattern string) string {
 // ingestFile reads one file fully, once, feeding parsed records to the store.
 // It transparently decompresses .gz archives and honours the since cutoff. Used
 // for historical/batch reads (not live tailing).
-func ingestFile(path, site string, norm *NormalizerHolder, sink *Store, since time.Time, log *slog.Logger) {
+//
+// Returns the byte offset immediately after the last byte scanned, for a plain
+// (non-.gz) file -- always 0 for .gz archives, which are read once and never
+// live-tailed. The read boundary is frozen at the file's size BEFORE scanning
+// starts (via io.LimitReader), not at scanner-EOF: this is what makes handing
+// off to a live Tailer seeded with this offset provably gap/duplicate-free even
+// if nginx is actively appending to the file during this read. ingestFile owns
+// bytes [0, offset); a Tailer started with startOffset=offset owns everything
+// from there on -- disjoint ranges, so no duplicate is possible, and the only
+// gap that can occur is a single line straddling the exact cut (the same class
+// of edge case Tailer.drain already tolerates at every ordinary poll boundary).
+func ingestFile(path, site string, norm *NormalizerHolder, sink *Store, since time.Time, log *slog.Logger) (int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		log.Warn("batch: cannot open log", "path", path, "err", err)
-		return
+		return 0, err
 	}
 	defer f.Close()
 
+	isGz := strings.HasSuffix(path, ".gz")
 	var r io.Reader = f
-	if strings.HasSuffix(path, ".gz") {
+	var limit int64
+	if isGz {
 		gz, err := gzip.NewReader(f)
 		if err != nil {
 			log.Warn("batch: not a valid gzip file", "path", path, "err", err)
-			return
+			return 0, err
 		}
 		defer gz.Close()
 		r = gz
+	} else {
+		fi, err := f.Stat()
+		if err != nil {
+			log.Warn("batch: cannot stat log", "path", path, "err", err)
+			return 0, err
+		}
+		limit = fi.Size() // frozen before a single line is scanned
+		r = io.LimitReader(f, limit)
 	}
 
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024) // long UA lines
 	var n int
 	for sc.Scan() {
-		rec, ok := ParseCombined(sc.Text(), site)
+		rec, ok := Parse(sc.Text(), site)
 		if !ok {
 			continue
 		}
@@ -96,4 +117,9 @@ func ingestFile(path, site string, norm *NormalizerHolder, sink *Store, since ti
 		n++
 	}
 	log.Info("batch: ingested archive", "path", path, "records", n)
+
+	if isGz {
+		return 0, nil
+	}
+	return limit, nil
 }

@@ -12,8 +12,17 @@ ExecStart=/usr/bin/knight -config /etc/knight/config.json
 Restart=on-failure
 RestartSec=3
 
+# StateDirectory=knight creates/owns /var/lib/knight (mode 0750, knight:knight)
+# and auto-adds it to the write-allowlist below, even under ProtectSystem=strict.
+# systemd exports its path as $STATE_DIRECTORY, which the agent prefers over
+# its /etc/knight/state fallback (see Config.StateDir) -- so this is the entire
+# change needed for the analytics snapshot + tailer position checkpoint to live
+# in the more FHS-correct /var/lib/knight instead of alongside the config.
+StateDirectory=knight
+
 # --- Hardening ---
-# The agent only needs to read log files and rewrite its own config.
+# The agent only needs to read log files, rewrite its own config, and
+# checkpoint its analytics state under $STATE_DIRECTORY.
 NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=/etc/knight

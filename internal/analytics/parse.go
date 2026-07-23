@@ -6,6 +6,7 @@
 package analytics
 
 import (
+	"encoding/json"
 	"regexp"
 	"strconv"
 	"strings"
@@ -80,6 +81,97 @@ func ParseCombined(line, site string) (Record, bool) {
 		Referer: m[7],
 		UA:      m[8],
 	}, true
+}
+
+// jsonLine is Knight's registered structured nginx log format (see
+// deploy/nginx-log-format.conf). It's versioned via "v" so a future field
+// change can be detected rather than silently mis-parsed. Unknown/missing
+// fields are never a parse error -- encoding/json ignores fields it doesn't
+// recognize and zero-values ones that are absent, so this format can gain
+// fields later without breaking older log lines already on disk.
+type jsonLine struct {
+	V            int    `json:"v"`
+	Time         string `json:"time"`
+	RemoteAddr   string `json:"remote_addr"`
+	ForwardedFor string `json:"forwarded_for"`
+	Method       string `json:"method"`
+	URI          string `json:"uri"`
+	Status       int    `json:"status"`
+	BytesSent    int64  `json:"bytes_sent"`
+	Referer      string `json:"referer"`
+	UserAgent    string `json:"user_agent"`
+}
+
+// Parse is the entrypoint tailers/batch readers should use: it auto-detects
+// Knight's structured JSON format (deploy/nginx-log-format.conf) vs. plain
+// nginx "combined" format per line, so a site can mix history from before and
+// after adopting the JSON format in the same log file with no migration step.
+func Parse(line, site string) (Record, bool) {
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "{") {
+		if rec, ok := parseJSON(trimmed, site); ok {
+			return rec, true
+		}
+		// Falls through to combined on a malformed JSON line rather than
+		// dropping it outright -- cheap insurance, essentially free.
+	}
+	return ParseCombined(line, site)
+}
+
+// parseJSON parses one line of Knight's registered JSON log format. The real
+// client IP is preferred from X-Forwarded-For (first hop = original client)
+// when present, falling back to remote_addr -- this is what fixes "distinct
+// IPs = 1" behind a proxy/load balancer, without needing any Knight-side
+// configuration once the nginx log_format is adopted.
+func parseJSON(line, site string) (Record, bool) {
+	var j jsonLine
+	if err := json.Unmarshal([]byte(line), &j); err != nil {
+		return Record{}, false
+	}
+	if j.URI == "" || j.Status == 0 {
+		return Record{}, false // not a recognizable request line
+	}
+
+	ts, err := time.Parse(time.RFC3339, j.Time)
+	if err != nil {
+		ts = time.Now()
+	}
+
+	path, query := j.URI, ""
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path, query = path[:i], path[i+1:]
+	}
+
+	ip := j.RemoteAddr
+	if fwd := strings.TrimSpace(firstForwardedFor(j.ForwardedFor)); fwd != "" {
+		ip = fwd
+	}
+
+	return Record{
+		Time:    ts,
+		Site:    site,
+		IP:      ip,
+		Method:  j.Method,
+		Path:    path,
+		Query:   query,
+		Status:  j.Status,
+		Bytes:   j.BytesSent,
+		Referer: j.Referer,
+		UA:      j.UserAgent,
+	}, true
+}
+
+// firstForwardedFor returns the first (left-most / original client) address in
+// a possibly comma-separated X-Forwarded-For value, or "" for an empty/absent
+// header. nginx logs "-" for an absent header, which this treats as empty.
+func firstForwardedFor(v string) string {
+	if v == "" || v == "-" {
+		return ""
+	}
+	if i := strings.IndexByte(v, ','); i >= 0 {
+		v = v[:i]
+	}
+	return strings.TrimSpace(v)
 }
 
 // Class returns the status class bucket index (1xx..5xx -> 1..5, unknown -> 0).
