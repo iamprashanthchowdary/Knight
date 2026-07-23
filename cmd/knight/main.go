@@ -129,14 +129,14 @@ func main() {
 		specs = append(specs, analytics.SiteSpec{Name: s.Name, AccessLog: s.AccessLog})
 	}
 	if historical {
-		mgr.Bootstrap(specs, cfg.Analytics.RoutePatterns)
+		mgr.Bootstrap(specs, cfg.Analytics.RoutePatterns, cfg.Analytics.IgnorePaths)
 	} else {
 		// Sites with a saved position resume exactly where they left off
 		// (cheap); anything else (a true first-ever start, or a site added
 		// since the last checkpoint) gets one bounded historical read covering
 		// the configured retention window, then hands off to live tailing with
 		// no gap -- see Manager.BootstrapWithHistory.
-		mgr.BootstrapWithHistory(specs, cfg.Analytics.RoutePatterns, time.Now().Add(-cfg.AnalyticsRetention()), pos)
+		mgr.BootstrapWithHistory(specs, cfg.Analytics.RoutePatterns, cfg.Analytics.IgnorePaths, time.Now().Add(-cfg.AnalyticsRetention()), pos)
 	}
 	if len(cfg.Sites) == 0 {
 		log.Warn("no sites configured yet — add one via the config page or config.json")

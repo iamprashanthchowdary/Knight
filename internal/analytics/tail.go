@@ -97,6 +97,9 @@ func (t *Tailer) drain(offset int64) int64 {
 		if !ok {
 			continue
 		}
+		if t.norm.Ignore(rec.Path) {
+			continue // e.g. Knight's own dashboard API polling -- not site traffic
+		}
 		if !t.since.IsZero() && rec.Time.Before(t.since) {
 			continue // older than the requested start point
 		}

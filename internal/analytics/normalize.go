@@ -18,6 +18,11 @@ import (
 //     placeholder; ordinary words are kept literally.
 type Normalizer struct {
 	patterns []routePattern
+	// ignore holds path prefixes whose requests are dropped entirely at ingest
+	// time (never counted, never stored) -- e.g. Knight's own dashboard API
+	// path, so the agent doesn't count its own polling as site traffic. Stored
+	// trimmed of any trailing slash; matched by Ignore.
+	ignore []string
 }
 
 type routePattern struct {
@@ -31,10 +36,12 @@ type patternSeg struct {
 	value string
 }
 
-// NewNormalizer compiles config route patterns. Patterns use ":name" for a
-// dynamic segment, e.g. "/api/users/:id/orders/:orderId". Invalid/empty
-// patterns are skipped. Passing nil is fine -- pure heuristic mode.
-func NewNormalizer(patterns []string) *Normalizer {
+// NewNormalizer compiles config route patterns and ignore prefixes. Patterns
+// use ":name" for a dynamic segment, e.g. "/api/users/:id/orders/:orderId".
+// ignorePaths are absolute path prefixes to drop from ingestion entirely (see
+// Ignore). Invalid/empty entries in either list are skipped. Passing nil for
+// both is fine -- pure heuristic mode, nothing ignored.
+func NewNormalizer(patterns, ignorePaths []string) *Normalizer {
 	n := &Normalizer{}
 	for _, p := range patterns {
 		p = strings.TrimSpace(p)
@@ -51,7 +58,34 @@ func NewNormalizer(patterns []string) *Normalizer {
 		}
 		n.patterns = append(n.patterns, rp)
 	}
+	for _, p := range ignorePaths {
+		p = strings.TrimSpace(p)
+		if p == "" || !strings.HasPrefix(p, "/") {
+			continue
+		}
+		// Trim a trailing slash so "/api/knight/" and "/api/knight" behave the
+		// same; the bare root "/" collapses to "" then back to "/" so it only
+		// ever ignores the literal root path, never everything.
+		p = strings.TrimRight(p, "/")
+		if p == "" {
+			p = "/"
+		}
+		n.ignore = append(n.ignore, p)
+	}
 	return n
+}
+
+// Ignore reports whether a request path should be dropped from ingestion. A
+// path matches an ignore prefix when it equals the prefix exactly or sits
+// beneath it as a full path segment -- so "/api/knight" ignores "/api/knight"
+// and "/api/knight/v1/overview" but NOT "/api/knightfoo".
+func (n *Normalizer) Ignore(path string) bool {
+	for _, p := range n.ignore {
+		if path == p || strings.HasPrefix(path, p+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // Normalize returns the endpoint template for a path.

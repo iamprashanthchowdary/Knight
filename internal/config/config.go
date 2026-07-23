@@ -210,6 +210,14 @@ type AnalyticsConfig struct {
 	// RoutePatterns are optional endpoint templates that override the automatic
 	// URL grouping, e.g. "/api/users/:id/orders/:orderId". First match wins.
 	RoutePatterns []string `json:"route_patterns"`
+	// IgnorePaths are absolute path prefixes dropped from ingestion entirely --
+	// never counted, never stored. The intended use is excluding Knight's own
+	// dashboard API path (e.g. "/api/sre/knight") so the agent doesn't count
+	// its own polling as site traffic, but any noisy path can be excluded. A
+	// prefix matches a request path when it equals it exactly or the path sits
+	// beneath it as a full segment ("/api/knight" matches "/api/knight/v1/x"
+	// but not "/api/knightfoo").
+	IgnorePaths []string `json:"ignore_paths"`
 	// StateDir is where the periodic analytics snapshot + tailer position
 	// registry are persisted, so a restart resumes instantly instead of
 	// reprocessing the whole retention window. Empty = derive a default (see
@@ -426,6 +434,9 @@ func normalizeNilSlices(c *Config) {
 	}
 	if c.Analytics.RoutePatterns == nil {
 		c.Analytics.RoutePatterns = []string{}
+	}
+	if c.Analytics.IgnorePaths == nil {
+		c.Analytics.IgnorePaths = []string{}
 	}
 	if c.Alerts.Rules == nil {
 		c.Alerts.Rules = []AlertRule{}

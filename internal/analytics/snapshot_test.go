@@ -10,7 +10,7 @@ import (
 func buildTestStore(t *testing.T) *Store {
 	t.Helper()
 	s := NewStore(24 * time.Hour)
-	n := NewNormalizer(nil)
+	n := NewNormalizer(nil, nil)
 	base := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	add := func(ip, path string, status int, at time.Time) {
 		r, ok := ParseCombined(

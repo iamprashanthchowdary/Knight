@@ -12,7 +12,7 @@ type NormalizerHolder struct {
 // NewNormalizerHolder starts with a pure-heuristic (no patterns) normalizer.
 func NewNormalizerHolder() *NormalizerHolder {
 	h := &NormalizerHolder{}
-	h.p.Store(NewNormalizer(nil))
+	h.p.Store(NewNormalizer(nil, nil))
 	return h
 }
 
@@ -21,3 +21,7 @@ func (h *NormalizerHolder) Store(n *Normalizer) { h.p.Store(n) }
 
 // Normalize applies the current normalizer.
 func (h *NormalizerHolder) Normalize(path string) string { return h.p.Load().Normalize(path) }
+
+// Ignore reports whether the current normalizer would drop this path from
+// ingestion (see Normalizer.Ignore).
+func (h *NormalizerHolder) Ignore(path string) bool { return h.p.Load().Ignore(path) }
