@@ -125,6 +125,11 @@ func (s *ConfigService) Validate(e config.Editable) []FieldError {
 			errs = append(errs, FieldError{fmt.Sprintf("analytics.route_patterns[%d]", i), "must start with /"})
 		}
 	}
+	for i, p := range e.Analytics.IgnorePaths {
+		if !strings.HasPrefix(strings.TrimSpace(p), "/") {
+			errs = append(errs, FieldError{fmt.Sprintf("analytics.ignore_paths[%d]", i), "must start with /"})
+		}
+	}
 	if e.Analytics.StateDir != "" && !filepath.IsAbs(e.Analytics.StateDir) {
 		errs = append(errs, FieldError{"analytics.state_dir", "must be an absolute path"})
 	}
@@ -247,7 +252,7 @@ func (s *ConfigService) Apply(e config.Editable) (errs []FieldError, saveErr err
 	for _, site := range e.Sites {
 		specs = append(specs, analytics.SiteSpec{Name: site.Name, AccessLog: site.AccessLog})
 	}
-	s.mgr.Apply(specs, e.Analytics.RoutePatterns)
+	s.mgr.Apply(specs, e.Analytics.RoutePatterns, e.Analytics.IgnorePaths)
 	s.store.SetRetention(s.cfg.AnalyticsRetention())
 	if s.alerts != nil {
 		s.alerts.Reload(e.Alerts)
@@ -321,7 +326,7 @@ func TestLog(path string) TestLogResult {
 // PreviewRoute shows how a path would be grouped under the given draft patterns,
 // so the UI can make URL templating tangible before saving.
 func PreviewRoute(path string, patterns []string) string {
-	return analytics.NewNormalizer(patterns).Normalize(path)
+	return analytics.NewNormalizer(patterns, nil).Normalize(path)
 }
 
 func friendlyErr(err error) string {

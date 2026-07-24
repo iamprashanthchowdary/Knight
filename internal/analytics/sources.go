@@ -110,6 +110,9 @@ func ingestFile(path, site string, norm *NormalizerHolder, sink *Store, since ti
 		if !ok {
 			continue
 		}
+		if norm.Ignore(rec.Path) {
+			continue // e.g. Knight's own dashboard API polling -- not site traffic
+		}
 		if !since.IsZero() && rec.Time.Before(since) {
 			continue
 		}

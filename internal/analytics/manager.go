@@ -66,10 +66,10 @@ func (m *Manager) historical() bool { return m.fromStart || !m.since.IsZero() }
 // Bootstrap performs the initial ingest from the configured sites. This is the
 // `-from-start`/`-since` CLI path only -- see cmd/knight/main.go, which calls
 // this instead of BootstrapWithHistory exactly when historical() would be true.
-func (m *Manager) Bootstrap(sites []SiteSpec, patterns []string) {
+func (m *Manager) Bootstrap(sites []SiteSpec, patterns, ignorePaths []string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.holder.Store(NewNormalizer(patterns))
+	m.holder.Store(NewNormalizer(patterns, ignorePaths))
 
 	if m.historical() {
 		// Read every matched file once (gzip-aware), across all sites.
@@ -104,9 +104,9 @@ func (m *Manager) Bootstrap(sites []SiteSpec, patterns []string) {
 // path -- rotated archives included -- on its own, so warm and cold sites are
 // handled correctly in one call without the caller needing to know which is
 // which.
-func (m *Manager) BootstrapWithHistory(sites []SiteSpec, patterns []string, since time.Time, pos Positions) {
+func (m *Manager) BootstrapWithHistory(sites []SiteSpec, patterns, ignorePaths []string, since time.Time, pos Positions) {
 	m.mu.Lock()
-	m.holder.Store(NewNormalizer(patterns))
+	m.holder.Store(NewNormalizer(patterns, ignorePaths))
 	m.mu.Unlock()
 
 	for _, s := range sites {
@@ -176,10 +176,10 @@ func (m *Manager) Positions() Positions {
 }
 
 // Apply live-reconciles tailers and swaps the normalizer (hot reload).
-func (m *Manager) Apply(sites []SiteSpec, patterns []string) {
+func (m *Manager) Apply(sites []SiteSpec, patterns, ignorePaths []string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.holder.Store(NewNormalizer(patterns))
+	m.holder.Store(NewNormalizer(patterns, ignorePaths))
 	m.reconcileLocked(sites)
 }
 

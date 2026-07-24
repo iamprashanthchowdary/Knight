@@ -6,7 +6,7 @@ import (
 )
 
 func TestNormalizeHeuristic(t *testing.T) {
-	n := NewNormalizer(nil)
+	n := NewNormalizer(nil, nil)
 	cases := map[string]string{
 		"/":                   "/",
 		"/api/products/12345": "/api/products/{id}",
@@ -24,7 +24,7 @@ func TestNormalizeHeuristic(t *testing.T) {
 }
 
 func TestNormalizeConfigPatternWins(t *testing.T) {
-	n := NewNormalizer([]string{"/api/users/:id/orders/:orderId"})
+	n := NewNormalizer([]string{"/api/users/:id/orders/:orderId"}, nil)
 	got := n.Normalize("/api/users/42/orders/99")
 	want := "/api/users/{id}/orders/{orderId}"
 	if got != want {
@@ -33,6 +33,32 @@ func TestNormalizeConfigPatternWins(t *testing.T) {
 	// Non-matching length falls through to heuristic.
 	if got := n.Normalize("/api/users/42"); got != "/api/users/{id}" {
 		t.Errorf("fallthrough Normalize = %q, want /api/users/{id}", got)
+	}
+}
+
+func TestNormalizerIgnore(t *testing.T) {
+	n := NewNormalizer(nil, []string{"/api/sre/knight", "/payments/api/knight/", "  ", "no-leading-slash", "/"})
+	cases := map[string]bool{
+		"/api/sre/knight":                  true,  // exact
+		"/api/sre/knight/v1/overview":      true,  // beneath, full segment
+		"/api/sre/knightfoo":               false, // NOT a segment boundary
+		"/api/sre/knightfoo/v1":            false, // still not the ignored prefix
+		"/payments/api/knight/v1/ips":      true,  // trailing slash in config normalized away
+		"/payments/api/knight":             true,  // matches despite config's trailing slash
+		"/payments/api/lumpsum/redirect":   false, // a real endpoint, untouched
+		"/":                                true,  // bare-root ignore entry matches only "/"
+		"/anything/else":                   false, // "/" ignore does NOT swallow everything
+	}
+	for path, want := range cases {
+		if got := n.Ignore(path); got != want {
+			t.Errorf("Ignore(%q) = %v, want %v", path, got, want)
+		}
+	}
+
+	// A normalizer with no ignore list never drops anything.
+	none := NewNormalizer(nil, nil)
+	if none.Ignore("/api/sre/knight/v1/overview") {
+		t.Error("empty ignore list must not drop any path")
 	}
 }
 
@@ -111,7 +137,7 @@ func TestParseJSONMalformedFallsBackToCombined(t *testing.T) {
 
 func TestStoreAggregatesRatesAndGrouping(t *testing.T) {
 	s := NewStore(0)
-	n := NewNormalizer(nil)
+	n := NewNormalizer(nil, nil)
 	add := func(ip, path string, status int) {
 		r, _ := ParseCombined(
 			`X - - [15/Jul/2026:13:04:05 +0000] "GET `+path+` HTTP/1.1" `+itoa(status)+` 10 "-" "ua"`, "s")
@@ -174,7 +200,7 @@ func TestEvictOldestIPsBoundsMapSize(t *testing.T) {
 
 func TestStoreEnforcesMaxTrackedIPs(t *testing.T) {
 	s := NewStore(24 * time.Hour)
-	n := NewNormalizer(nil)
+	n := NewNormalizer(nil, nil)
 	base := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
 
 	// One record per distinct IP, well over a small artificial cap tested via
