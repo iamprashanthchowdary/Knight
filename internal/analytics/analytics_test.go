@@ -135,6 +135,87 @@ func TestParseJSONMalformedFallsBackToCombined(t *testing.T) {
 	}
 }
 
+func TestDecodeLine(t *testing.T) {
+	line := `10.221.1.118 - - [27/Jul/2026:11:49:03 +0530] "GET /payments/api/lumpsum/get-redirection-url?ihNo=483420&fundCode=102%2FA&apiKey=abc-123 HTTP/1.0" 200 111 "https://swiftflow.com/checkout" "axios/0.21.4" 0.569 0.569`
+	b := DecodeLine(line)
+	if !b.OK {
+		t.Fatal("expected DecodeLine to parse a well-formed combined-format line")
+	}
+	if b.IP != "10.221.1.118" || b.Method != "GET" || b.Status != 200 {
+		t.Errorf("bad breakdown: %+v", b)
+	}
+	if b.Path != "/payments/api/lumpsum/get-redirection-url" {
+		t.Errorf("path = %q", b.Path)
+	}
+	if b.Referer != "https://swiftflow.com/checkout" || b.UA != "axios/0.21.4" {
+		t.Errorf("referer/UA wrong: %+v", b)
+	}
+	if b.Raw != line {
+		t.Error("Raw must be the exact original line")
+	}
+
+	byKey := map[string]QueryParam{}
+	for _, q := range b.Query {
+		byKey[q.Key] = q
+	}
+	if len(byKey) != 3 {
+		t.Fatalf("expected 3 query params, got %+v", b.Query)
+	}
+	// fundCode's raw value is percent-encoded ("102%2FA"); decoded should read "102/A".
+	if byKey["fundCode"].Decoded != "102/A" {
+		t.Errorf("fundCode decoded = %q, want 102/A", byKey["fundCode"].Decoded)
+	}
+	if byKey["fundCode"].Raw != "102%2FA" {
+		t.Errorf("fundCode raw = %q, want 102%%2FA", byKey["fundCode"].Raw)
+	}
+	if byKey["fundCode"].Corrupt {
+		t.Error("fundCode should not be flagged corrupt -- it decodes to clean, printable text")
+	}
+	if byKey["ihNo"].Decoded != "483420" {
+		t.Errorf("ihNo decoded = %q", byKey["ihNo"].Decoded)
+	}
+}
+
+func TestDecodeLineCorruptParamFallsBackToRaw(t *testing.T) {
+	// %FF is not valid UTF-8 on its own -- decodes to replacement characters.
+	line := `1.1.1.1 - - [27/Jul/2026:11:49:03 +0530] "GET /a?bad=%FF%FF HTTP/1.1" 200 1 "-" "-"`
+	b := DecodeLine(line)
+	if !b.OK {
+		t.Fatal("expected parse to succeed despite the corrupt param")
+	}
+	if len(b.Query) != 1 {
+		t.Fatalf("expected 1 query param, got %+v", b.Query)
+	}
+	q := b.Query[0]
+	if !q.Corrupt {
+		t.Error("expected Corrupt=true for invalid percent-encoded bytes")
+	}
+	if q.Decoded != q.Raw {
+		t.Errorf("corrupt param's Decoded should fall back to Raw: decoded=%q raw=%q", q.Decoded, q.Raw)
+	}
+}
+
+func TestDecodeLineRejectsGarbage(t *testing.T) {
+	b := DecodeLine("not a log line at all")
+	if b.OK {
+		t.Error("expected OK=false for a line matching no known format")
+	}
+	if b.Raw != "not a log line at all" {
+		t.Error("Raw must still be populated even when parsing fails")
+	}
+}
+
+func TestDecodeLineCapturesHostFromJSONFormat(t *testing.T) {
+	line := `{"v":1,"time":"2026-07-20T12:34:56+05:30","remote_addr":"10.221.1.118","method":"GET","uri":"/a","status":200,"bytes_sent":1,"host":"swiftflowpayments.com"}`
+	b := DecodeLine(line)
+	if !b.OK {
+		t.Fatal("expected JSON-format line to parse")
+	}
+	if b.Host != "swiftflowpayments.com" {
+		t.Errorf("Host = %q, want swiftflowpayments.com", b.Host)
+	}
+}
+
 func TestStoreAggregatesRatesAndGrouping(t *testing.T) {
 	s := NewStore(0)
 	n := NewNormalizer(nil, nil)

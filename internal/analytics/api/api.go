@@ -59,6 +59,7 @@ func (s *Server) Handler() http.Handler {
 				"/v1/report/endpoints?classes=2,3,4,5",
 				"/v1/report/keys?endpoint=...",
 				"/v1/report/rows?endpoint=...&keys=...&include_raw=1",
+				"POST /v1/report/decode {\"raw\":\"...\"}",
 				"/v1/config",
 				"/v1/alerts/test",
 				"/v1/agent",
@@ -87,6 +88,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/report/endpoints", s.auth.requireViewer(s.reportEndpoints))
 	mux.HandleFunc("GET /v1/report/keys", s.auth.requireViewer(s.reportKeys))
 	mux.HandleFunc("GET /v1/report/rows", s.auth.requireViewer(s.reportRows))
+	mux.HandleFunc("POST /v1/report/decode", s.auth.requireViewer(s.reportDecode))
 
 	// Config (write-side) and anything that can leak secrets or reconfigure the
 	// agent: admin-only. Only mounted when a ConfigService is present.
@@ -310,6 +312,22 @@ func (s *Server) reportRows(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, table)
+}
+
+// reportDecode decomposes one raw log line (already surfaced via
+// GET /v1/report/rows?include_raw=1) into its structured fields and every
+// query-string key, decoded for readability -- the FE's "what actually
+// happened" detail screen for a single request. Re-parses with the exact
+// same Parse used at ingest time, so it can never drift from what Knight
+// itself extracted.
+func (s *Server) reportDecode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Raw string `json:"raw"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	writeJSON(w, analytics.DecodeLine(body.Raw))
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

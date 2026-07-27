@@ -25,6 +25,7 @@ type Record struct {
 	Bytes   int64
 	Referer string
 	UA      string
+	Host    string // request Host header, when the log format captures it (JSON format only; combined format has no such field)
 	Raw     string // the exact original log line, untouched -- for raw drill-down/audit
 }
 
@@ -102,6 +103,7 @@ type jsonLine struct {
 	BytesSent    int64  `json:"bytes_sent"`
 	Referer      string `json:"referer"`
 	UserAgent    string `json:"user_agent"`
+	Host         string `json:"host"`
 }
 
 // Parse is the entrypoint tailers/batch readers should use: it auto-detects
@@ -160,6 +162,7 @@ func parseJSON(line, site string) (Record, bool) {
 		Bytes:   j.BytesSent,
 		Referer: j.Referer,
 		UA:      j.UserAgent,
+		Host:    j.Host,
 		Raw:     line,
 	}, true
 }
