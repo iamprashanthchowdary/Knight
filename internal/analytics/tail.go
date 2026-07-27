@@ -1,7 +1,6 @@
 package analytics
 
 import (
-	"bufio"
 	"context"
 	"io"
 	"log/slog"
@@ -90,21 +89,31 @@ func (t *Tailer) drain(offset int64) int64 {
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return offset
 	}
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		rec, ok := Parse(sc.Text(), t.site)
+	// consumed tracks exactly how many bytes were read via COMPLETE lines --
+	// this, not the file's current total size, is what gets stored as the
+	// resume point. Blindly resuming from "size" (the old behavior) meant any
+	// read error -- e.g. an oversized/torn line from concurrent nginx workers
+	// interleaving writes -- silently marked everything up to the CURRENT file
+	// size as "consumed" even though the scan stopped short, permanently
+	// losing every line from the failure point onward with zero visibility.
+	// See readLines' doc comment for why this can no longer happen at all.
+	consumed, _, rerr := readLines(f, func(line string) {
+		rec, ok := Parse(line, t.site)
 		if !ok {
-			continue
+			return
 		}
 		if t.norm.Ignore(rec.Path) {
-			continue // e.g. Knight's own dashboard API polling -- not site traffic
+			return // e.g. Knight's own dashboard API polling -- not site traffic
 		}
 		if !t.since.IsZero() && rec.Time.Before(t.since) {
-			continue // older than the requested start point
+			return // older than the requested start point
 		}
 		t.sink.Add(rec, t.norm.Normalize(rec.Path))
+	})
+	if rerr != nil {
+		t.log.Warn("tail: error reading log (partial read this tick)", "path", t.path, "site", t.site, "err", rerr)
 	}
-	t.pos.Store(&FilePosition{Offset: size, Size: size, ModTime: fi.ModTime()})
-	return size
+	newOffset := offset + consumed
+	t.pos.Store(&FilePosition{Offset: newOffset, Size: size, ModTime: fi.ModTime()})
+	return newOffset
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -76,6 +77,55 @@ func TestIngestFileFreezesReadBoundary(t *testing.T) {
 	}
 	if offset2 != fi.Size() {
 		t.Errorf("second call offset = %d, want %d (current file size)", offset2, fi.Size())
+	}
+}
+
+// TestIngestFileRecoversFromOversizedLine reproduces the real production bug
+// found 2026-07-27: two nginx workers writing large log lines (long request
+// URLs carrying embedded tokens) to the same file can have their writes
+// interleave into one garbled "line" far longer than any real request line --
+// bufio.Scanner's old 4MB cap turned that into a fatal, whole-file read
+// failure (records_before_error logged, but ingestFile returned an error and
+// 0 offset, and -- more seriously in Tailer.drain's case -- a PERMANENT silent
+// stall). readLines has no such cap: the garbled line is read in full, fails
+// Parse, and is harmlessly skipped -- every other line, including ones AFTER
+// the garbled one, must still be ingested.
+func TestIngestFileRecoversFromOversizedLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "access.log")
+
+	ts := "27/Jul/2026:10:00:00 +0000"
+	good := func(i int) string {
+		return fmt.Sprintf(`10.0.0.1 - - [%s] "GET /x HTTP/1.1" 200 1 "-" "ua-%d"`+"\n", ts, i)
+	}
+	// A single "line" (no embedded newline) well past the old 4MB scanner cap
+	// AND structurally unparseable -- simulating two concurrent writes torn
+	// and glued together mid-line, with none of the combined-format anchors
+	// (brackets/quotes) surviving intact.
+	garbled := strings.Repeat("A", 5*1024*1024) + "\n"
+
+	var content string
+	content += good(1)
+	content += garbled
+	content += good(2)
+	content += good(3)
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewStore(time.Hour)
+	offset, err := ingestFile(path, "site", NewNormalizerHolder(), store, time.Time{}, testLogger())
+	if err != nil {
+		t.Fatalf("ingestFile: %v", err)
+	}
+	if offset != int64(len(content)) {
+		t.Errorf("offset = %d, want %d (the whole file, garbled line included)", offset, len(content))
+	}
+	// 3 good records: the garbled one must fail Parse and be silently skipped,
+	// not abort the read and lose the two good lines that follow it.
+	if got := store.Overview().Total; got != 3 {
+		t.Errorf("total = %d, want 3 (garbled line skipped, everything else ingested)", got)
 	}
 }
 

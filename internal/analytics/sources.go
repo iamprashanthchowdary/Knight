@@ -1,7 +1,6 @@
 package analytics
 
 import (
-	"bufio"
 	"compress/gzip"
 	"io"
 	"log/slog"
@@ -102,29 +101,40 @@ func ingestFile(path, site string, norm *NormalizerHolder, sink *Store, since ti
 		r = io.LimitReader(f, limit)
 	}
 
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024) // long UA lines
+	// readLines (not bufio.Scanner) so an unusually long or torn/garbled line
+	// -- e.g. concurrent nginx workers interleaving writes of a large request
+	// URL -- doesn't abort the whole read; see its doc comment. A batch read
+	// gets exactly one pass, so unlike Tailer.drain, also process a trailing
+	// unterminated fragment (partial) rather than leaving it for a "next
+	// time" that doesn't exist here.
 	var n int
-	for sc.Scan() {
-		rec, ok := Parse(sc.Text(), site)
+	consumed, partial, rerr := readLines(r, func(line string) {
+		rec, ok := Parse(line, site)
 		if !ok {
-			continue
+			return
 		}
 		if norm.Ignore(rec.Path) {
-			continue // e.g. Knight's own dashboard API polling -- not site traffic
+			return // e.g. Knight's own dashboard API polling -- not site traffic
 		}
 		if !since.IsZero() && rec.Time.Before(since) {
-			continue
+			return
 		}
 		sink.Add(rec, norm.Normalize(rec.Path))
 		n++
+	})
+	if partial != "" {
+		if rec, ok := Parse(partial, site); ok && !norm.Ignore(rec.Path) && (since.IsZero() || !rec.Time.Before(since)) {
+			sink.Add(rec, norm.Normalize(rec.Path))
+			n++
+		}
 	}
-	// Scan() returns false on a clean EOF AND on a real read error (e.g. a
-	// truncated/corrupt gzip body) -- without this check, a genuinely broken
-	// file silently reports "0 records, all fine" instead of a warning.
-	if err := sc.Err(); err != nil {
-		log.Warn("batch: error reading log (partial read)", "path", path, "records_before_error", n, "err", err)
-		return 0, err
+	_ = consumed // exact byte count not needed here -- see the frozen `limit` returned below
+	// A real (non-EOF) read error -- e.g. a truncated/corrupt gzip body --
+	// without this check, a genuinely broken file silently reports "0
+	// records, all fine" instead of a warning.
+	if rerr != nil {
+		log.Warn("batch: error reading log (partial read)", "path", path, "records_before_error", n, "err", rerr)
+		return 0, rerr
 	}
 	log.Info("batch: ingested archive", "path", path, "records", n)
 
