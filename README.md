@@ -146,9 +146,10 @@ via `cmd/knight`).
 | `GET /v1/series?bucket=&count=` | fixed-shape time series (e.g. `bucket=1h&count=24`), anchored to the latest ingested data so historical logs render correct dates |
 | `GET /v1/endpoints` | busiest endpoints (grouped), with health per endpoint |
 | `GET /v1/ips` / `GET /v1/ips/{ip}` | busiest source IPs / one IP's full breakdown |
-| `GET /v1/report/endpoints` | distinct **failing** endpoints (4xx/5xx), for drill-down |
-| `GET /v1/report/keys?endpoint=` | query-param keys discovered on that endpoint's failures, with coverage % |
-| `GET /v1/report/rows?endpoint=&keys=` | the report table (add `&format=csv` to download) |
+| `GET /v1/report/range` | actual span of currently-retained events, for bounding a custom date filter |
+| `GET /v1/report/endpoints` | distinct endpoints matching the filter (any status class, default 2xx-5xx), for drill-down |
+| `GET /v1/report/keys?endpoint=` | query-param keys discovered on that endpoint's matching requests, with coverage % |
+| `GET /v1/report/rows?endpoint=&keys=` | the report table (add `&format=csv` to download, `&include_raw=1` for the exact original log line per request) |
 | `GET /v1/config` / `PUT /v1/config` | read / hot-reload the runtime config |
 | `POST /v1/config/validate` | validate an edit without saving |
 | `POST /v1/config/test-log` | check whether a candidate log path is readable |
@@ -156,15 +157,21 @@ via `cmd/knight`).
 | `POST /v1/alerts/test` | send a synthetic alert to verify webhook/email credentials |
 | `GET /healthz` | plain `200 ok` liveness check |
 
-## Failure drill-down reports
+## Drill-down reports
 
-Point Knight at a failing endpoint and it will:
+Point Knight at an endpoint and it will:
 
-1. list distinct failing endpoints (4xx/5xx), busiest first,
-2. discover every query-string key present on that endpoint's failures
-   (with coverage %), and
+1. list distinct endpoints matching your status-class/time filters (defaults
+   to 2xx-5xx; narrow to just 4xx/5xx for a failure-only view), busiest first,
+2. discover every query-string key present on that endpoint's matching
+   requests (with coverage %), and
 3. produce a table — `date · ip · status · method · endpoint` plus one column
    per key you select — exportable as CSV.
+
+Every individual request is retained for this (not just failures), bounded by
+`maxEvents` in `internal/analytics/store.go` — `GET /v1/report/range` reports
+the actual currently-retained span so a custom date filter can be bounded to
+data that's really there.
 
 This turns a URL like
 `GET /api/lumpsum/get-redirection-url?ihNo=...&apiKey=...&fundCode=...` into a

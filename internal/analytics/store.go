@@ -20,11 +20,21 @@ const maxEndpointsPerIP = 500
 // user set analytics.retention to "168h".
 const alertWindowRetention = 3 * time.Hour
 
-// maxFailingEvents caps how many individual failing requests are retained for
-// drill-down reports. Only status >= 400 is kept, so healthy traffic costs
-// nothing; the cap bounds memory under an error storm. When exceeded, the
-// oldest 10% is dropped in one shot (amortized O(1) per ingest).
-const maxFailingEvents = 50000
+// maxEvents caps how many individual requests (every status class, not just
+// failures) are retained for drill-down reports. Retaining ALL traffic costs
+// real memory under sustained high volume -- unlike the aggregate counters
+// elsewhere in Store, this can't be bounded by route/IP cardinality, only by
+// count. Each Event also carries the exact raw log line (Event.Raw) for
+// audit/drill-down, so per-event cost is dominated by that line's length, not
+// the small structured fields -- worst case (long URLs/user-agents) a few
+// hundred bytes to low KB per event, so budget memory accordingly at the cap.
+// On a busy site the oldest events can roll off well before the display
+// retention window elapses -- Store.EventRange exposes the TRUE
+// currently-retained span so the API/FE can be honest about that rather than
+// silently returning an empty report for a range that sounds retained but
+// isn't. When exceeded, the oldest 10% is dropped in one shot (amortized O(1)
+// per ingest).
+const maxEvents = 200_000
 
 // maxTrackedIPs bounds the ONE structure in this file with no natural ceiling:
 // unlike endpoints (bounded by route cardinality after normalization) or
@@ -39,9 +49,9 @@ const maxFailingEvents = 50000
 // new distinct IPs can arrive in one minute.
 const maxTrackedIPs = 200_000
 
-// Event is one retained failing request, kept so reports can break its query
-// string into per-key columns. Aggregates can't do that -- they've already
-// thrown away the individual URLs.
+// Event is one retained request (any status class), kept so reports can break
+// its query string into per-key columns. Aggregates can't do that -- they've
+// already thrown away the individual URLs.
 type Event struct {
 	Time     time.Time
 	Site     string
@@ -51,6 +61,7 @@ type Event struct {
 	Template string // normalized endpoint
 	Query    string // raw (still percent-encoded) query string
 	Status   int
+	Raw      string // the exact original log line, for raw drill-down/audit
 }
 
 // Store holds rolling in-memory traffic stats, safe for concurrent use: tailer
@@ -69,8 +80,8 @@ type Store struct {
 	siteMinutes map[string]map[int64]*classCounts // site -> unix-minute -> counts
 	ipMinutes   map[int64]map[string]int64         // unix-minute -> ip -> request count
 
-	// Individual failing requests (status >= 400) for drill-down reports,
-	// capped at maxFailingEvents and pruned by retention in Evict.
+	// Individual requests (every status class) for drill-down reports, capped
+	// at maxEvents and pruned by retention in Evict.
 	events []Event
 }
 
@@ -205,17 +216,17 @@ func (s *Store) Add(r Record, template string) {
 	ep.ips[r.IP] = struct{}{}
 	ep.add(r.Status)
 
-	// Retain individual failing requests for reports.
-	if r.Status >= 400 {
-		if len(s.events) >= maxFailingEvents {
-			drop := maxFailingEvents / 10
-			s.events = append(s.events[:0], s.events[drop:]...) // reuse backing array
-		}
-		s.events = append(s.events, Event{
-			Time: r.Time, Site: r.Site, IP: r.IP, Method: r.Method,
-			Path: r.Path, Template: template, Query: r.Query, Status: r.Status,
-		})
+	// Retain the individual request for reports (every status class -- see
+	// maxEvents' doc comment for the memory/retention tradeoff this implies).
+	if len(s.events) >= maxEvents {
+		drop := maxEvents / 10
+		s.events = append(s.events[:0], s.events[drop:]...) // reuse backing array
 	}
+	s.events = append(s.events, Event{
+		Time: r.Time, Site: r.Site, IP: r.IP, Method: r.Method,
+		Path: r.Path, Template: template, Query: r.Query, Status: r.Status,
+		Raw: r.Raw,
+	})
 }
 
 // Evict drops time-series buckets and idle IPs older than the retention window.
@@ -256,8 +267,8 @@ func (s *Store) Evict(now time.Time) {
 		}
 	}
 
-	// Prune failing events older than the display retention. Events are appended
-	// in ingest (roughly time) order, so a single leading scan suffices.
+	// Prune events older than the display retention. Events are appended in
+	// ingest (roughly time) order, so a single leading scan suffices.
 	cut := now.Add(-s.retention)
 	i := 0
 	for i < len(s.events) && s.events[i].Time.Before(cut) {

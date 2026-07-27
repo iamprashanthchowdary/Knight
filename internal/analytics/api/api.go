@@ -55,9 +55,10 @@ func (s *Server) Handler() http.Handler {
 				"/v1/ips?limit=50",
 				"/v1/ips/{ip}",
 				"/v1/endpoints?limit=50",
-				"/v1/report/endpoints?classes=4,5",
+				"/v1/report/range",
+				"/v1/report/endpoints?classes=2,3,4,5",
 				"/v1/report/keys?endpoint=...",
-				"/v1/report/rows?endpoint=...&keys=...",
+				"/v1/report/rows?endpoint=...&keys=...&include_raw=1",
 				"/v1/config",
 				"/v1/alerts/test",
 				"/v1/agent",
@@ -78,8 +79,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/ips/{ip}", s.auth.requireViewer(s.ipDetail))
 	mux.HandleFunc("GET /v1/endpoints", s.auth.requireViewer(s.endpoints))
 
-	// Failure drill-down reports (read-only): pick failing endpoints, discover
-	// their query-param keys, then produce a per-request table (+ CSV export).
+	// Drill-down reports (read-only): pick an endpoint (any status class, not
+	// just failures), discover its query-param keys, then produce a per-request
+	// table (+ CSV export). /range reports the actual currently-retained event
+	// span, so a custom date filter can be bounded to real data.
+	mux.HandleFunc("GET /v1/report/range", s.auth.requireViewer(s.reportRange))
 	mux.HandleFunc("GET /v1/report/endpoints", s.auth.requireViewer(s.reportEndpoints))
 	mux.HandleFunc("GET /v1/report/keys", s.auth.requireViewer(s.reportKeys))
 	mux.HandleFunc("GET /v1/report/rows", s.auth.requireViewer(s.reportRows))
@@ -247,13 +251,14 @@ func (s *Server) endpoints(w http.ResponseWriter, r *http.Request) {
 }
 
 // reportFilter builds a ReportFilter from shared query params: site, endpoint,
-// method, from/to (unix seconds), classes ("4,5"). Missing classes defaults to
-// both 4xx and 5xx.
+// method, from/to (unix seconds), classes ("2,3,4,5"). Missing classes
+// defaults to every class (2xx-5xx) -- a caller that wants only failures must
+// say so explicitly via classes=4,5, same as any other narrowing filter.
 func reportFilter(r *http.Request) analytics.ReportFilter {
 	q := r.URL.Query()
 	classes := intList(q.Get("classes"))
 	if len(classes) == 0 {
-		classes = []int{4, 5}
+		classes = []int{2, 3, 4, 5}
 	}
 	return analytics.ReportFilter{
 		Site:     q.Get("site"),
@@ -263,6 +268,20 @@ func reportFilter(r *http.Request) analytics.ReportFilter {
 		To:       unixTime(q.Get("to")),
 		Classes:  classes,
 	}
+}
+
+// reportRange reports the actual span of currently-retained events (unix
+// seconds), so the FE can bound/default a custom date-range picker to data
+// that's really there instead of letting the user pick a range that silently
+// returns nothing. empty=true (with from/to omitted) means no events at all
+// are retained yet.
+func (s *Server) reportRange(w http.ResponseWriter, r *http.Request) {
+	from, to, ok := s.store.EventRange()
+	if !ok {
+		writeJSON(w, map[string]any{"empty": true})
+		return
+	}
+	writeJSON(w, map[string]any{"empty": false, "from": from.Unix(), "to": to.Unix()})
 }
 
 func (s *Server) reportEndpoints(w http.ResponseWriter, r *http.Request) {
@@ -276,7 +295,8 @@ func (s *Server) reportKeys(w http.ResponseWriter, r *http.Request) {
 func (s *Server) reportRows(w http.ResponseWriter, r *http.Request) {
 	keys := splitComma(r.URL.Query().Get("keys"))
 	limit := queryInt(r, "limit", 1000)
-	table := s.store.ReportRows(reportFilter(r), keys, limit)
+	includeRaw := r.URL.Query().Get("include_raw") == "1"
+	table := s.store.ReportRows(reportFilter(r), keys, limit, includeRaw)
 
 	if r.URL.Query().Get("format") == "csv" {
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")

@@ -25,6 +25,7 @@ type Record struct {
 	Bytes   int64
 	Referer string
 	UA      string
+	Raw     string // the exact original log line, untouched -- for raw drill-down/audit
 }
 
 // combinedRE parses the nginx "combined" log format:
@@ -80,6 +81,7 @@ func ParseCombined(line, site string) (Record, bool) {
 		Bytes:   bytes,
 		Referer: m[7],
 		UA:      m[8],
+		Raw:     line,
 	}, true
 }
 
@@ -158,6 +160,7 @@ func parseJSON(line, site string) (Record, bool) {
 		Bytes:   j.BytesSent,
 		Referer: j.Referer,
 		UA:      j.UserAgent,
+		Raw:     line,
 	}, true
 }
 

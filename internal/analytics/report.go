@@ -10,10 +10,10 @@ import (
 	"unicode/utf8"
 )
 
-// ReportFilter selects which retained failing events a report covers. Zero
-// values mean "no constraint": empty Site/Endpoint/Method match all, zero
-// From/To are unbounded, and an empty Classes matches every retained event
-// (which is already only status >= 400, i.e. "4xx and 5xx").
+// ReportFilter selects which retained events a report covers. Zero values
+// mean "no constraint": empty Site/Endpoint/Method match all, zero From/To
+// are unbounded, and an empty Classes matches every retained event (every
+// status class 1xx-5xx, not just failures).
 type ReportFilter struct {
 	Site     string
 	Endpoint string // endpoint template
@@ -55,6 +55,24 @@ func (f ReportFilter) match(e Event) bool {
 	return true
 }
 
+// EventRange reports the actual span of currently-retained events (oldest to
+// newest), so callers can be honest about what a custom date-range filter can
+// cover -- see maxEvents' doc comment: on a busy site the oldest events can
+// roll off the cap well before the display retention window elapses, so
+// "retention says 7d" doesn't necessarily mean 7 days of individual events are
+// still there to query. ok is false when no events are retained at all.
+// Events are appended in ingest (roughly time) order (same invariant Evict's
+// pruning already relies on), so the first/last element is enough -- no need
+// to scan the whole slice.
+func (s *Store) EventRange() (oldest, newest time.Time, ok bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.events) == 0 {
+		return time.Time{}, time.Time{}, false
+	}
+	return s.events[0].Time, s.events[len(s.events)-1].Time, true
+}
+
 // matchingEvents snapshots events passing the filter under the read lock, so
 // the (potentially slow) URL parsing happens outside the lock.
 func (s *Store) matchingEvents(f ReportFilter) []Event {
@@ -69,7 +87,11 @@ func (s *Store) matchingEvents(f ReportFilter) []Event {
 	return out
 }
 
-// ReportEndpoint is one distinct failing endpoint (step 3/4 of the report flow).
+// ReportEndpoint is one distinct endpoint matching the filter (step 3/4 of the
+// report flow). C4xx/C5xx count only within the already-filtered set (e.g. a
+// filter of Classes=[2,3] will always report C4xx=C5xx=0, since no 4xx/5xx
+// events are in that set to begin with) -- they exist to split failures out
+// from a mixed/unfiltered view, not as an unconditional endpoint-wide total.
 type ReportEndpoint struct {
 	Site     string `json:"site"`
 	Method   string `json:"method"`
@@ -79,7 +101,7 @@ type ReportEndpoint struct {
 	C5xx     int    `json:"c5xx"`
 }
 
-// ReportEndpoints aggregates failing events into distinct endpoints, busiest
+// ReportEndpoints aggregates matching events into distinct endpoints, busiest
 // first, so the user can pick which to drill into.
 func (s *Store) ReportEndpoints(f ReportFilter) []ReportEndpoint {
 	evs := s.matchingEvents(f)
@@ -156,8 +178,12 @@ type ReportTable struct {
 }
 
 // ReportRows builds the report for the selected keys. Multi-valued query params
-// are joined with " | "; missing keys render as an empty cell.
-func (s *Store) ReportRows(f ReportFilter, keys []string, limit int) ReportTable {
+// are joined with " | "; missing keys render as an empty cell. includeRaw
+// appends a trailing "raw" column with the exact original log line for each
+// request -- off by default (it's the largest field per row, and most callers
+// just want the parsed columns) but there for genuine "what actually happened"
+// drill-down/audit, e.g. the per-endpoint detail screen.
+func (s *Store) ReportRows(f ReportFilter, keys []string, limit int, includeRaw bool) ReportTable {
 	evs := s.matchingEvents(f)
 	sort.Slice(evs, func(i, j int) bool { return evs[i].Time.After(evs[j].Time) })
 	total := len(evs)
@@ -166,6 +192,9 @@ func (s *Store) ReportRows(f ReportFilter, keys []string, limit int) ReportTable
 	}
 
 	cols := append([]string{"date", "ip", "status", "method", "endpoint"}, keys...)
+	if includeRaw {
+		cols = append(cols, "raw")
+	}
 	rows := make([][]string, 0, len(evs))
 	for _, e := range evs {
 		vals, _ := url.ParseQuery(e.Query)
@@ -191,6 +220,9 @@ func (s *Store) ReportRows(f ReportFilter, keys []string, limit int) ReportTable
 				}
 			}
 			row = append(row, v)
+		}
+		if includeRaw {
+			row = append(row, e.Raw)
 		}
 		rows = append(rows, row)
 	}
