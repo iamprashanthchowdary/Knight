@@ -112,7 +112,7 @@ func main() {
 				store.Restore(snap)
 				pos = loadedPos
 				log.Info("restored analytics state from checkpoint",
-					"saved_at", snap.SavedAt.Format(time.RFC3339), "total_requests", store.Overview().Total)
+					"saved_at", snap.SavedAt.Format(time.RFC3339), "total_requests", store.Overview("").Total)
 			} else {
 				log.Warn("snapshot/positions checkpoint mismatched or incomplete; starting cold",
 					"snapshot_saved_at", snap.SavedAt.Format(time.RFC3339))
@@ -203,7 +203,7 @@ func main() {
 	// work, but Run() -- the periodic rule evaluator -- is never started.
 	alertsEngine := alerts.NewEngine(cfg.Alerts, store, log)
 	if !historical {
-		go alertsEngine.Run(ctx, func() []string { return store.Overview().Sites })
+		go alertsEngine.Run(ctx, func() []string { return store.Overview("").Sites })
 	} else {
 		log.Info("historical replay: alert rule evaluation is disabled")
 	}

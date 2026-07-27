@@ -39,15 +39,15 @@ func TestNormalizeConfigPatternWins(t *testing.T) {
 func TestNormalizerIgnore(t *testing.T) {
 	n := NewNormalizer(nil, []string{"/api/sre/knight", "/payments/api/knight/", "  ", "no-leading-slash", "/"})
 	cases := map[string]bool{
-		"/api/sre/knight":                  true,  // exact
-		"/api/sre/knight/v1/overview":      true,  // beneath, full segment
-		"/api/sre/knightfoo":               false, // NOT a segment boundary
-		"/api/sre/knightfoo/v1":            false, // still not the ignored prefix
-		"/payments/api/knight/v1/ips":      true,  // trailing slash in config normalized away
-		"/payments/api/knight":             true,  // matches despite config's trailing slash
-		"/payments/api/lumpsum/redirect":   false, // a real endpoint, untouched
-		"/":                                true,  // bare-root ignore entry matches only "/"
-		"/anything/else":                   false, // "/" ignore does NOT swallow everything
+		"/api/sre/knight":                true,  // exact
+		"/api/sre/knight/v1/overview":    true,  // beneath, full segment
+		"/api/sre/knightfoo":             false, // NOT a segment boundary
+		"/api/sre/knightfoo/v1":          false, // still not the ignored prefix
+		"/payments/api/knight/v1/ips":    true,  // trailing slash in config normalized away
+		"/payments/api/knight":           true,  // matches despite config's trailing slash
+		"/payments/api/lumpsum/redirect": false, // a real endpoint, untouched
+		"/":                              true,  // bare-root ignore entry matches only "/"
+		"/anything/else":                 false, // "/" ignore does NOT swallow everything
 	}
 	for path, want := range cases {
 		if got := n.Ignore(path); got != want {
@@ -150,7 +150,7 @@ func TestStoreAggregatesRatesAndGrouping(t *testing.T) {
 	add("1.1.1.1", "/api/products/3", 404)
 	add("1.1.1.1", "/api/products/4", 500)
 
-	ov := s.Overview()
+	ov := s.Overview("")
 	if ov.Total != 4 {
 		t.Fatalf("total = %d, want 4", ov.Total)
 	}
@@ -170,6 +170,125 @@ func TestStoreAggregatesRatesAndGrouping(t *testing.T) {
 	}
 	if d.CalledEndpoints[0].Hits != 4 {
 		t.Errorf("hits = %d, want 4", d.CalledEndpoints[0].Hits)
+	}
+}
+
+// TestStoreSiteFiltering covers the site-scoping added to Overview/TopIPs/
+// TopEndpoints so the FE's site selector actually isolates one site's data
+// instead of always mixing every configured site together (the original
+// complaint: two sites sharing a log source showed as unlabeled-looking
+// duplicate rows with no way to isolate either one).
+func TestStoreSiteFiltering(t *testing.T) {
+	s := NewStore(0)
+	n := NewNormalizer(nil, nil)
+	add := func(site, ip, path string, status int) {
+		r, _ := ParseCombined(
+			`X - - [15/Jul/2026:13:04:05 +0000] "GET `+path+` HTTP/1.1" `+itoa(status)+` 10 "-" "ua"`, site)
+		r.IP = ip
+		s.Add(r, n.Normalize(r.Path))
+	}
+	// siteA: 3 requests, one distinct IP, one endpoint.
+	add("siteA", "1.1.1.1", "/api/a", 200)
+	add("siteA", "1.1.1.1", "/api/a", 200)
+	add("siteA", "1.1.1.1", "/api/a", 404)
+	// siteB: 2 requests, a DIFFERENT IP, a DIFFERENT endpoint.
+	add("siteB", "2.2.2.2", "/api/b", 200)
+	add("siteB", "2.2.2.2", "/api/b", 500)
+
+	// Unfiltered: both sites combined, exactly like before this change.
+	all := s.Overview("")
+	if all.Total != 5 {
+		t.Fatalf("Overview(\"\").Total = %d, want 5", all.Total)
+	}
+	if len(all.Sites) != 2 {
+		t.Fatalf("Overview(\"\").Sites = %v, want both sites listed", all.Sites)
+	}
+
+	// Filtered to siteA: only siteA's 3 requests, but Sites must still list
+	// BOTH sites -- filtering stats must not shrink the site selector itself.
+	a := s.Overview("siteA")
+	if a.Total != 3 {
+		t.Errorf("Overview(\"siteA\").Total = %d, want 3", a.Total)
+	}
+	if a.DistinctIPs != 1 || a.DistinctRoutes != 1 {
+		t.Errorf("Overview(\"siteA\") distinct counts wrong: ips=%d routes=%d", a.DistinctIPs, a.DistinctRoutes)
+	}
+	if len(a.Sites) != 2 {
+		t.Errorf("Overview(\"siteA\").Sites = %v, want both sites still listed", a.Sites)
+	}
+
+	b := s.Overview("siteB")
+	if b.Total != 2 {
+		t.Errorf("Overview(\"siteB\").Total = %d, want 2", b.Total)
+	}
+
+	// TopEndpoints: exact per-site filtering (EndpointStat is keyed by site).
+	epsA := s.TopEndpoints(50, "siteA")
+	if len(epsA) != 1 || epsA[0].Endpoint != "/api/a" {
+		t.Errorf("TopEndpoints(siteA) = %+v, want just /api/a", epsA)
+	}
+	epsB := s.TopEndpoints(50, "siteB")
+	if len(epsB) != 1 || epsB[0].Endpoint != "/api/b" {
+		t.Errorf("TopEndpoints(siteB) = %+v, want just /api/b", epsB)
+	}
+	if got := s.TopEndpoints(50, ""); len(got) != 2 {
+		t.Errorf("TopEndpoints(\"\") = %+v, want both endpoints unfiltered", got)
+	}
+
+	// TopIPs: membership-based filtering (1.1.1.1 only ever touched siteA).
+	ipsA := s.TopIPs(50, "siteA")
+	if len(ipsA) != 1 || ipsA[0].IP != "1.1.1.1" {
+		t.Errorf("TopIPs(siteA) = %+v, want just 1.1.1.1", ipsA)
+	}
+	ipsB := s.TopIPs(50, "siteB")
+	if len(ipsB) != 1 || ipsB[0].IP != "2.2.2.2" {
+		t.Errorf("TopIPs(siteB) = %+v, want just 2.2.2.2", ipsB)
+	}
+}
+
+// TestPruneInactiveSites reproduces the real-world complaint: a site removed
+// or renamed in config.json (e.g. "swiftflow" dropped, leaving only
+// "Swfitflow-uat") kept showing up in Overview().Sites and TopEndpoints
+// forever, because nothing ever removed a site by NAME -- only by time/count.
+func TestPruneInactiveSites(t *testing.T) {
+	s := NewStore(0)
+	n := NewNormalizer(nil, nil)
+	add := func(site, ip, path string, status int) {
+		r, _ := ParseCombined(
+			`X - - [15/Jul/2026:13:04:05 +0000] "GET `+path+` HTTP/1.1" `+itoa(status)+` 10 "-" "ua"`, site)
+		r.IP = ip
+		s.Add(r, n.Normalize(r.Path))
+	}
+	add("swiftflow", "1.1.1.1", "/api/a", 200)     // stale: no longer configured
+	add("Swfitflow-uat", "2.2.2.2", "/api/b", 200) // still configured
+
+	// Before pruning: both sites are visible, exactly like the bug.
+	before := s.Overview("")
+	if len(before.Sites) != 2 {
+		t.Fatalf("before prune: Sites = %v, want both", before.Sites)
+	}
+
+	s.PruneInactiveSites(map[string]bool{"Swfitflow-uat": true})
+
+	after := s.Overview("")
+	if len(after.Sites) != 1 || after.Sites[0] != "Swfitflow-uat" {
+		t.Errorf("after prune: Sites = %v, want just [Swfitflow-uat]", after.Sites)
+	}
+	if after.Total != 1 {
+		t.Errorf("after prune: Total = %d, want 1 (stale site's traffic must not linger in the combined view)", after.Total)
+	}
+
+	eps := s.TopEndpoints(50, "")
+	if len(eps) != 1 || eps[0].Site != "Swfitflow-uat" {
+		t.Errorf("TopEndpoints after prune = %+v, want only the active site's endpoint", eps)
+	}
+
+	// The stale IP's site membership must be cleared too, so it no longer
+	// counts toward TopIPs(..., "swiftflow") or shows "swiftflow" in its
+	// own Sites list.
+	ips := s.TopIPs(50, "swiftflow")
+	if len(ips) != 0 {
+		t.Errorf("TopIPs(swiftflow) after prune = %+v, want none (swiftflow no longer active)", ips)
 	}
 }
 
@@ -214,7 +333,7 @@ func TestStoreEnforcesMaxTrackedIPs(t *testing.T) {
 		s.Add(r, n.Normalize(r.Path))
 	}
 	s.Evict(base) // well under maxTrackedIPs; must not touch fresh IPs
-	if got := s.Overview().DistinctIPs; got != 50 {
+	if got := s.Overview("").DistinctIPs; got != 50 {
 		t.Fatalf("distinct ips after in-window evict = %d, want 50", got)
 	}
 }

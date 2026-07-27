@@ -209,7 +209,7 @@ func (s *Server) previewRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.store.Overview())
+	writeJSON(w, s.store.Overview(r.URL.Query().Get("site")))
 }
 
 func (s *Server) timeseries(w http.ResponseWriter, r *http.Request) {
@@ -234,7 +234,7 @@ func (s *Server) series(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) ips(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.store.TopIPs(queryInt(r, "limit", 50)))
+	writeJSON(w, s.store.TopIPs(queryInt(r, "limit", 50), r.URL.Query().Get("site")))
 }
 
 func (s *Server) ipDetail(w http.ResponseWriter, r *http.Request) {
@@ -247,7 +247,7 @@ func (s *Server) ipDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) endpoints(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.store.TopEndpoints(queryInt(r, "limit", 50)))
+	writeJSON(w, s.store.TopEndpoints(queryInt(r, "limit", 50), r.URL.Query().Get("site")))
 }
 
 // reportFilter builds a ReportFilter from shared query params: site, endpoint,

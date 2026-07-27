@@ -124,7 +124,7 @@ func TestIngestFileRecoversFromOversizedLine(t *testing.T) {
 	}
 	// 3 good records: the garbled one must fail Parse and be silently skipped,
 	// not abort the read and lose the two good lines that follow it.
-	if got := store.Overview().Total; got != 3 {
+	if got := store.Overview("").Total; got != 3 {
 		t.Errorf("total = %d, want 3 (garbled line skipped, everything else ingested)", got)
 	}
 }
@@ -158,7 +158,7 @@ func TestIngestFileGzipReturnsZeroOffset(t *testing.T) {
 	if offset != 0 {
 		t.Errorf("offset = %d, want 0 for a .gz archive", offset)
 	}
-	if store.Overview().Total != 1 {
-		t.Errorf("total = %d, want 1 (the gz content should still be ingested)", store.Overview().Total)
+	if store.Overview("").Total != 1 {
+		t.Errorf("total = %d, want 1 (the gz content should still be ingested)", store.Overview("").Total)
 	}
 }

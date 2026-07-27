@@ -109,6 +109,17 @@ func (m *Manager) BootstrapWithHistory(sites []SiteSpec, patterns, ignorePaths [
 	m.holder.Store(NewNormalizer(patterns, ignorePaths))
 	m.mu.Unlock()
 
+	// A site renamed or removed from config.json since the last run must stop
+	// showing up in Overview/TopEndpoints/the FE's site selector -- see
+	// Store.PruneInactiveSites' doc comment.
+	active := make(map[string]bool, len(sites))
+	for _, s := range sites {
+		if s.AccessLog != "" {
+			active[siteName(s)] = true
+		}
+	}
+	m.store.PruneInactiveSites(active)
+
 	for _, s := range sites {
 		if s.AccessLog == "" {
 			continue
@@ -195,6 +206,15 @@ func (m *Manager) reconcileLocked(sites []SiteSpec) {
 		}
 		desired[siteName(s)] = resolveLiveFile(s.AccessLog)
 	}
+
+	// A site removed via a live config edit must stop lingering in
+	// Overview/TopEndpoints/the FE's site selector -- see
+	// Store.PruneInactiveSites' doc comment.
+	active := make(map[string]bool, len(desired))
+	for name := range desired {
+		active[name] = true
+	}
+	m.store.PruneInactiveSites(active)
 
 	for name, h := range m.running {
 		if path, ok := desired[name]; !ok || path != h.path {

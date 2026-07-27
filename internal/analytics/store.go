@@ -279,6 +279,47 @@ func (s *Store) Evict(now time.Time) {
 	}
 }
 
+// PruneInactiveSites removes all retained data for any site NOT in active.
+// Nothing else ever prunes a site by NAME (only by time/count), so a site
+// renamed or removed from config.json otherwise lingers forever in the
+// persisted Store: Overview().Sites and TopEndpoints keep showing it, and the
+// FE's site selector keeps offering it as a real option indefinitely, even
+// though it hasn't received a single new request since the rename/removal.
+// Called whenever the active site set is (re)established -- see
+// Manager.BootstrapWithHistory and Manager.reconcileLocked.
+//
+// Caveat: an IP's classCounts/Endpoints can't be split back out per-site (see
+// TopIPs' doc comment), so removing a stale site only clears its membership
+// marker from IPStat.Sites -- an IP that touched BOTH an active and a
+// removed site keeps its removed-site traffic folded into its overall
+// totals. Only matters for an IP that spanned multiple sites.
+func (s *Store) PruneInactiveSites(active map[string]bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name := range s.sites {
+		if !active[name] {
+			delete(s.sites, name)
+		}
+	}
+	for key, ep := range s.endpoints {
+		if !active[ep.Site] {
+			delete(s.endpoints, key)
+		}
+	}
+	for name := range s.siteMinutes {
+		if !active[name] {
+			delete(s.siteMinutes, name)
+		}
+	}
+	for _, ip := range s.ips {
+		for name := range ip.Sites {
+			if !active[name] {
+				delete(ip.Sites, name)
+			}
+		}
+	}
+}
+
 // evictOldestIPs deletes the least-recently-seen entries from m until its size
 // is at or under cap. A no-op when already under cap, so the common case (a
 // site with well under maxTrackedIPs distinct visitors) never pays this cost.
@@ -726,23 +767,49 @@ type Overview struct {
 	Sites          []string `json:"sites"`
 }
 
-// Overview aggregates all sites.
-func (s *Store) Overview() Overview {
+// Overview aggregates all sites, or just one when site is non-empty. Sites
+// always lists EVERY known site regardless of the filter -- that list is what
+// populates the site selector itself, so filtering to one site must not
+// shrink the set of sites available to pick from.
+func (s *Store) Overview(site string) Overview {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var all classCounts
-	for _, sc := range s.sites {
-		all.total += sc.total
-		for i := range all.class {
-			all.class[i] += sc.class[i]
+	if site == "" {
+		for _, sc := range s.sites {
+			all.total += sc.total
+			for i := range all.class {
+				all.class[i] += sc.class[i]
+			}
 		}
+	} else if sc, ok := s.sites[site]; ok {
+		all = *sc
 	}
 	succ, redir, fail, er := all.Rates()
+
 	sites := make([]string, 0, len(s.sites))
 	for name := range s.sites {
 		sites = append(sites, name)
 	}
 	sort.Strings(sites)
+
+	distinctIPs := len(s.ips)
+	distinctRoutes := len(s.endpoints)
+	if site != "" {
+		distinctIPs = 0
+		for _, ip := range s.ips {
+			if _, ok := ip.Sites[site]; ok {
+				distinctIPs++
+			}
+		}
+		distinctRoutes = 0
+		for _, ep := range s.endpoints {
+			if ep.Site == site {
+				distinctRoutes++
+			}
+		}
+	}
+
 	return Overview{
 		Total:          all.total,
 		StatusClasses:  all.StatusClasses(),
@@ -750,8 +817,8 @@ func (s *Store) Overview() Overview {
 		RedirectRate:   redir,
 		FailureRate:    fail,
 		ErrorRate:      er,
-		DistinctIPs:    len(s.ips),
-		DistinctRoutes: len(s.endpoints),
+		DistinctIPs:    distinctIPs,
+		DistinctRoutes: distinctRoutes,
 		Sites:          sites,
 	}
 }
@@ -770,12 +837,24 @@ type IPView struct {
 	LastSeen     time.Time `json:"last_seen"`
 }
 
-// TopIPs returns the busiest IPs, highest volume first.
-func (s *Store) TopIPs(limit int) []IPView {
+// TopIPs returns the busiest IPs, highest volume first, restricted to IPs
+// that have touched site when it's non-empty. Caveat: Total/rates/Endpoints
+// reflect that IP's activity across EVERY site it has touched, not just the
+// filtered one -- IPStat doesn't split its counters per-site (unlike
+// EndpointStat, which is already keyed by site). An IP behind a shared
+// reverse proxy that legitimately only ever talks to one site won't notice
+// the difference; one that spans multiple sites will see cross-site totals
+// here even when filtered.
+func (s *Store) TopIPs(limit int, site string) []IPView {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	views := make([]IPView, 0, len(s.ips))
 	for _, ip := range s.ips {
+		if site != "" {
+			if _, ok := ip.Sites[site]; !ok {
+				continue
+			}
+		}
 		succ, redir, fail, er := ip.Rates()
 		sites := make([]string, 0, len(ip.Sites))
 		for name := range ip.Sites {
@@ -849,12 +928,18 @@ type EndpointView struct {
 	LastSeen     time.Time `json:"last_seen"`
 }
 
-// TopEndpoints returns the busiest endpoints, highest volume first.
-func (s *Store) TopEndpoints(limit int) []EndpointView {
+// TopEndpoints returns the busiest endpoints, highest volume first, filtered
+// to just site when it's non-empty. EndpointStat is already keyed by
+// site+method+template (see Store.Add), so this filter is exact -- unlike
+// TopIPs, there's no cross-site conflation here.
+func (s *Store) TopEndpoints(limit int, site string) []EndpointView {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	views := make([]EndpointView, 0, len(s.endpoints))
 	for _, ep := range s.endpoints {
+		if site != "" && ep.Site != site {
+			continue
+		}
 		succ, redir, fail, er := ep.Rates()
 		views = append(views, EndpointView{
 			Site: ep.Site, Method: ep.Method, Endpoint: ep.Template, Total: ep.total,

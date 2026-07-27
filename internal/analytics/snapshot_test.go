@@ -36,9 +36,9 @@ func buildTestStore(t *testing.T) *Store {
 func TestStoreSnapshotRestoreRoundTrip(t *testing.T) {
 	s := buildTestStore(t)
 
-	wantOverview := s.Overview()
-	wantIPs := s.TopIPs(50)
-	wantEndpoints := s.TopEndpoints(50)
+	wantOverview := s.Overview("")
+	wantIPs := s.TopIPs(50, "")
+	wantEndpoints := s.TopEndpoints(50, "")
 	wantIPDetail, ok := s.IPDetail("1.1.1.1")
 	if !ok {
 		t.Fatal("expected IP detail for 1.1.1.1")
@@ -49,13 +49,13 @@ func TestStoreSnapshotRestoreRoundTrip(t *testing.T) {
 	restored := NewStore(24 * time.Hour)
 	restored.Restore(snap)
 
-	if got := restored.Overview(); !reflect.DeepEqual(got, wantOverview) {
+	if got := restored.Overview(""); !reflect.DeepEqual(got, wantOverview) {
 		t.Errorf("Overview mismatch after restore:\n got=%+v\nwant=%+v", got, wantOverview)
 	}
-	if got := restored.TopIPs(50); !reflect.DeepEqual(got, wantIPs) {
+	if got := restored.TopIPs(50, ""); !reflect.DeepEqual(got, wantIPs) {
 		t.Errorf("TopIPs mismatch after restore:\n got=%+v\nwant=%+v", got, wantIPs)
 	}
-	if got := restored.TopEndpoints(50); !reflect.DeepEqual(got, wantEndpoints) {
+	if got := restored.TopEndpoints(50, ""); !reflect.DeepEqual(got, wantEndpoints) {
 		t.Errorf("TopEndpoints mismatch after restore:\n got=%+v\nwant=%+v", got, wantEndpoints)
 	}
 	gotIPDetail, ok := restored.IPDetail("1.1.1.1")
@@ -87,7 +87,7 @@ func TestSaveLoadSnapshotGobRoundTrip(t *testing.T) {
 
 	restored := NewStore(24 * time.Hour)
 	restored.Restore(loaded)
-	if got, want := restored.Overview().Total, s.Overview().Total; got != want {
+	if got, want := restored.Overview("").Total, s.Overview("").Total; got != want {
 		t.Errorf("total after disk round-trip = %d, want %d", got, want)
 	}
 }

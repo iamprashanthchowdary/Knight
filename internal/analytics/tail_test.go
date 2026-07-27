@@ -54,14 +54,14 @@ func TestTailerRecoversFromOversizedLine(t *testing.T) {
 	// the same poll.
 	appendLine(good(1) + garbled + good(2))
 	offset := tailer.drain(0)
-	if got := store.Overview().Total; got != 2 {
+	if got := store.Overview("").Total; got != 2 {
 		t.Fatalf("after tick 1: total = %d, want 2 (both good lines, garbled one skipped)", got)
 	}
 
 	// Tick 2: ingestion must continue normally -- proving no permanent stall.
 	appendLine(good(3))
 	offset = tailer.drain(offset)
-	if got := store.Overview().Total; got != 3 {
+	if got := store.Overview("").Total; got != 3 {
 		t.Fatalf("after tick 2: total = %d, want 3 (ingestion must resume, not stay stuck)", got)
 	}
 
@@ -96,7 +96,7 @@ func TestTailerResumesFromExactUnterminatedFragment(t *testing.T) {
 	if offset != 0 {
 		t.Errorf("offset = %d, want 0 (unterminated line must not be counted as consumed)", offset)
 	}
-	if got := store.Overview().Total; got != 0 {
+	if got := store.Overview("").Total; got != 0 {
 		t.Errorf("total = %d, want 0 (unterminated line must not be ingested yet)", got)
 	}
 
@@ -111,7 +111,7 @@ func TestTailerResumesFromExactUnterminatedFragment(t *testing.T) {
 	f.Close()
 
 	offset = tailer.drain(offset)
-	if got := store.Overview().Total; got != 1 {
+	if got := store.Overview("").Total; got != 1 {
 		t.Errorf("total = %d, want 1 (now-complete line must be ingested exactly once)", got)
 	}
 	if offset != int64(len(full)) {
